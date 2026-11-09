@@ -1,0 +1,21 @@
+{
+  "scan_date": "2026-11-09T21:00:00",
+  "hosts": [
+    {
+      "hostname": "ubuntu-server",
+      "ip": "100.64.0.10",
+      "os": "Ubuntu 22.04",
+      "services": [
+        {"port": 80, "name": "apache", "version": "2.4.49"},
+        {"port": 5000, "name": "flask-api", "version": "2.0.1"},
+        {"port": 3306, "name": "mysql", "version": "5.7"},
+        {"port": 22, "name": "openssh", "version": "7.2"}
+      ]
+    }
+  ],
+  "relations": [
+    {"source": "kali", "target": "apache", "port": 80},
+    {"source": "apache", "target": "flask-api", "port": 5000},
+    {"source": "flask-api", "target": "mysql", "port": 3306}
+  ]
+}
