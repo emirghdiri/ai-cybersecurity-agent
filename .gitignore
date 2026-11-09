@@ -1,0 +1,13 @@
+# Résultats de scan réels (contiennent des IP et services réels : ne pas publier)
+local_inventory.json
+collector_output.json
+analysis_result.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets
+.env
