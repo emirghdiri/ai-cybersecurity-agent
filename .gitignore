@@ -15,3 +15,8 @@ venv/
 
 # Secrets
 .env
+
+# Scans Nmap reels
+nmap_scan.xml
+*.nmap
+*.gnmap
