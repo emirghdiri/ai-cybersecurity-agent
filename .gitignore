@@ -1,13 +1,17 @@
-# Résultats de scan réels (contiennent des IP et services réels : ne pas publier)
+# Resultats de scan reels (contiennent des IP et services reels : ne pas publier)
 local_inventory.json
 collector_output.json
 analysis_result.json
+vulnerability_report.json
 
 # Python
 __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Cache local
+*.db
 
 # Secrets
 .env
