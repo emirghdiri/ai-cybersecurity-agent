@@ -1,34 +1,31 @@
 import json
-from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
-from backend.pipeline import ANALYSIS_FILE, COLLECTOR_FILE, run_pipeline
+from backend.database import get_analysis, init_db, list_analyses, save_analysis
+from backend.pipeline import COLLECTOR_FILE, run_pipeline
 
 MAX_IMPORT_SIZE = 1_000_000  # 1 Mo : largement suffisant pour un collector_output.json
 
 app = FastAPI(
     title="SentinelPath API",
     description="API de l'agent d'analyse de vulnérabilités et de chemins d'attaque",
-    version="0.2.0",
+    version="0.3.0",
 )
 
+init_db()  # cree la table SQLite au demarrage si elle n'existe pas
 
-def load_json(path: Path):
-    """Lit un fichier JSON de résultats, avec des erreurs HTTP claires."""
-    if not path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"{path.name} introuvable : lancez d'abord une analyse (POST /analyze).",
-        )
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=500,
-            detail=f"{path.name} est corrompu (JSON invalide).",
-        )
+
+def load_analysis(analysis_id: int | None = None):
+    """Lit une analyse dans SQLite (la plus récente par défaut), avec des erreurs claires."""
+    result = get_analysis(analysis_id)
+    if result is None:
+        if analysis_id is None:
+            detail = "Aucune analyse enregistrée : lancez d'abord POST /analyze."
+        else:
+            detail = f"Aucune analyse avec l'id {analysis_id} (voir GET /analyses)."
+        raise HTTPException(status_code=404, detail=detail)
+    return result
 
 
 def validate_collector(data):
@@ -74,13 +71,14 @@ def analyze():
                    "dans backend/data/ ou importez-le (POST /import).",
         )
     try:
-        return run_pipeline(COLLECTOR_FILE)
+        result = run_pipeline(COLLECTOR_FILE)
     except (KeyError, IndexError, json.JSONDecodeError) as e:
         raise HTTPException(
             status_code=422,
             detail=f"collector_output.json a un format inattendu : {e!r}",
         )
-
+    result["id"] = save_analysis(result)
+    return result
 
 @app.post("/import")
 async def import_collector(file: UploadFile = File(...)):
@@ -114,25 +112,32 @@ async def import_collector(file: UploadFile = File(...)):
     }
 
 
+@app.get("/analyses")
+def analyses():
+    """Historique de toutes les analyses (chiffres-clés seulement)."""
+    return list_analyses()
+
+
 @app.get("/analysis")
-def analysis():
-    """Renvoie le résultat complet de la dernière analyse."""
-    return load_json(ANALYSIS_FILE)
+def analysis(analysis_id: int | None = None):
+    """Résultat complet d'une analyse (la plus récente par défaut)."""
+    return load_analysis(analysis_id)
 
 
 @app.get("/vulnerabilities")
-def vulnerabilities():
-    """Renvoie les vulnérabilités (CVE/CVSS) de la dernière analyse."""
-    return load_json(ANALYSIS_FILE)["vulnerabilities"]
+def vulnerabilities(analysis_id: int | None = None):
+    """Vulnérabilités (CVE/CVSS) d'une analyse (la plus récente par défaut)."""
+    return load_analysis(analysis_id)["vulnerabilities"]
 
 
 @app.get("/graph")
-def graph():
-    """Renvoie le graphe d'attaque (noeuds + arêtes) de la dernière analyse."""
-    return load_json(ANALYSIS_FILE)["attack_graph"]
+def graph(analysis_id: int | None = None):
+    """Graphe d'attaque (noeuds + arêtes) d'une analyse (la plus récente par défaut)."""
+    return load_analysis(analysis_id)["attack_graph"]
 
 
 @app.get("/attack-paths")
-def attack_paths():
-    """Renvoie les chemins d'attaque vers chaque cible d'intérêt."""
-    return load_json(ANALYSIS_FILE)["attack_paths"]
+def attack_paths(analysis_id: int | None = None):
+    """Chemins d'attaque d'une analyse (la plus récente par défaut)."""
+    return load_analysis(analysis_id)["attack_paths"]
+
