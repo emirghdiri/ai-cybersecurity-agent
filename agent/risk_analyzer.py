@@ -116,10 +116,8 @@ def describe_risk(target, reason, worst_node, worst_cve):
     return sentence
 
 
-def analyze_risk():
-    data = load_collector_output()
-    graph = build_graph(data)
-    vuln_report = load_vulnerability_report()
+def analyze_risk(graph, vuln_report):
+    """Score chaque chemin d'attaque du graphe avec les CVSS du rapport de vulnerabilites."""
     port_index = build_port_index(vuln_report)
 
     results = []
@@ -145,7 +143,8 @@ def analyze_risk():
 
 
 def main():
-    results = analyze_risk()
+    graph = build_graph(load_collector_output())
+    results = analyze_risk(graph, load_vulnerability_report())
     print(f"{len(results)} chemin(s) analyse(s), classes du plus critique au moins critique :\n")
     for r in results:
         print(f"[{r['severity']}] score={r['risk_score']} (base CVSS={r['base_cvss']})")

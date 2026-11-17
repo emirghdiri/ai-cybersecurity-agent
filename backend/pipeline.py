@@ -1,6 +1,7 @@
 """
 Chaine d'analyse complete de SentinelPath :
-collector_output.json -> vulnerabilites (NVD) -> graphe d'attaque -> chemins d'attaque.
+collector_output.json -> vulnerabilites (NVD) -> graphe d'attaque -> chemins d'attaque
+-> score de risque.
 
 Ce fichier ne calcule rien lui-meme : il enchaine les modules existants
 (vulnerability/ et agent/) et regroupe leurs resultats dans analysis_result.json.
@@ -25,6 +26,7 @@ for folder in ("vulnerability", "agent"):
 from analyze_infra import analyze_infrastructure  # noqa: E402
 from attack_graph_builder import build_graph  # noqa: E402
 from attack_path_finder import find_attack_paths, find_candidate_targets  # noqa: E402
+from risk_analyzer import analyze_risk  # noqa: E402
 
 
 def graph_to_dict(graph):
@@ -61,12 +63,16 @@ def run_pipeline(collector_path=COLLECTOR_FILE):
             "paths": paths,
         })
 
+    # 4. Score de risque de chaque chemin (CVSS reels + type de cible)
+    risk_analysis = analyze_risk(graph, vuln_report)
+
     result = {
         "analysis_date": datetime.now().isoformat(timespec="seconds"),
         "scan_date": data.get("scan_date"),
         "vulnerabilities": vuln_report,
         "attack_graph": graph_to_dict(graph),
         "attack_paths": attack_paths,
+        "risk_analysis": risk_analysis,
     }
 
     DATA_DIR.mkdir(exist_ok=True)
@@ -84,4 +90,6 @@ if __name__ == "__main__":
         print(f"[{t['reason']}] {t['target']} : {t['path_count']} chemin(s)")
         for p in t["paths"]:
             print("    " + " -> ".join(p["path"]))
+    for r in result["risk_analysis"]:
+        print(f"[{r['severity']}] risque={r['risk_score']} : {' -> '.join(r['path'])}")
     print(f"Resultat enregistre : {ANALYSIS_FILE}")

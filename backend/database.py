@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS analyses (
     cve_count       INTEGER NOT NULL,
     critical_count  INTEGER NOT NULL,
     paths_count     INTEGER NOT NULL,
-    result_json     TEXT NOT NULL
+    result_json     TEXT NOT NULL,
+    max_risk_score  REAL
 )
 """
 
@@ -40,9 +41,13 @@ def get_connection():
 
 
 def init_db():
-    """Cree la table si elle n'existe pas encore."""
+    """Cree la table si elle n'existe pas encore (et ajoute les colonnes manquantes)."""
     with get_connection() as conn:
         conn.execute(SCHEMA)
+        # Base creee avant l'ajout du risque : on ajoute la colonne sans rien perdre.
+        columns = [row["name"] for row in conn.execute("PRAGMA table_info(analyses)")]
+        if "max_risk_score" not in columns:
+            conn.execute("ALTER TABLE analyses ADD COLUMN max_risk_score REAL")
 
 
 def summarize(result):
@@ -54,6 +59,9 @@ def summarize(result):
         "cve_count": len(cves),
         "critical_count": sum(1 for v in cves if v.get("severity") == "CRITICAL"),
         "paths_count": sum(t["path_count"] for t in result["attack_paths"]),
+        "max_risk_score": max(
+            (r["risk_score"] for r in result.get("risk_analysis", [])), default=None
+        ),
     }
 
 
@@ -63,8 +71,8 @@ def save_analysis(result):
     with get_connection() as conn:
         cursor = conn.execute(
             """INSERT INTO analyses (analysis_date, scan_date, services_count,
-                   cve_count, critical_count, paths_count, result_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   cve_count, critical_count, paths_count, max_risk_score, result_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 result["analysis_date"],
                 result.get("scan_date"),
@@ -72,6 +80,7 @@ def save_analysis(result):
                 summary["cve_count"],
                 summary["critical_count"],
                 summary["paths_count"],
+                summary["max_risk_score"],
                 json.dumps(result, ensure_ascii=False),
             ),
         )
@@ -83,7 +92,7 @@ def list_analyses():
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT id, analysis_date, scan_date, services_count, cve_count,
-                      critical_count, paths_count
+                      critical_count, paths_count, max_risk_score
                FROM analyses ORDER BY id DESC"""
         ).fetchall()
     return [dict(row) for row in rows]
