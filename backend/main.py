@@ -10,7 +10,7 @@ MAX_IMPORT_SIZE = 1_000_000  # 1 Mo : largement suffisant pour un collector_outp
 app = FastAPI(
     title="SentinelPath API",
     description="API de l'agent d'analyse de vulnérabilités et de chemins d'attaque",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 init_db()  # cree la table SQLite au demarrage si elle n'existe pas
@@ -140,4 +140,17 @@ def graph(analysis_id: int | None = None):
 def attack_paths(analysis_id: int | None = None):
     """Chemins d'attaque d'une analyse (la plus récente par défaut)."""
     return load_analysis(analysis_id)["attack_paths"]
+
+
+@app.get("/risk-analysis")
+def risk_analysis(analysis_id: int | None = None):
+    """Chemins d'attaque classés par score de risque (le plus critique en premier)."""
+    result = load_analysis(analysis_id)
+    if "risk_analysis" not in result:
+        raise HTTPException(
+            status_code=404,
+            detail=f"L'analyse {result['id']} date d'avant le Risk Analyzer : "
+                   "relancez POST /analyze.",
+        )
+    return result["risk_analysis"]
 
