@@ -2,3 +2,5 @@ psutil>=5.9
 requests>=2.31
 fastapi>=0.110
 uvicorn>=0.29
+networkx>=3.0
+python-multipart>=0.0.9

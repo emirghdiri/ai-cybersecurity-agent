@@ -20,3 +20,5 @@ venv/
 nmap_scan.xml
 *.nmap
 *.gnmap
+# Donnees du backend (resultats reels)
+backend/data/
