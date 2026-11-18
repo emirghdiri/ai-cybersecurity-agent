@@ -23,7 +23,6 @@
     <a href="#vulnerabilities">Vulnérabilités</a>
     <a href="#paths">Chemins d'attaque</a>
     <a href="#graph">Graphe</a>
-    <a href="#chat">Agent IA</a>
   </nav>
 
   <p id="status"></p>
@@ -63,16 +62,22 @@
         Afficher les services isolés (sans relation)</label>
       <div id="cy"></div>
     </section>
-
-    <section id="chat">
-      <h2>Agent IA</h2>
-      <div id="chat-log"></div>
-      <form id="chat-form">
-        <input id="chat-input" type="text" placeholder="Ex. : quel est le chemin le plus dangereux ?" autocomplete="off">
-        <button type="submit">Envoyer</button>
-      </form>
-    </section>
   </main>
+
+  <!-- Agent IA : bulle flottante en bas a droite, qui ouvre un panneau de discussion -->
+  <button id="chat-toggle" title="Discuter avec l'agent IA" aria-label="Ouvrir l'agent IA"></button>
+  <aside id="chat-panel" hidden>
+    <div class="chat-header">
+      <div><strong>Agent IA SentinelPath</strong><br><span id="chat-context" class="hint"></span></div>
+      <button id="chat-close" aria-label="Fermer">×</button>
+    </div>
+    <div id="chat-log"></div>
+    <div id="chat-suggestions"></div>
+    <form id="chat-form">
+      <input id="chat-input" type="text" placeholder="Posez votre question…" autocomplete="off">
+      <button type="submit">Envoyer</button>
+    </form>
+  </aside>
 
   <!-- app.js en premier : il definit les outils communs utilises par les autres fichiers -->
   <script src="vendor/cytoscape.min.js"></script>

@@ -1,9 +1,11 @@
 import json
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from backend.database import get_analysis, init_db, list_analyses, save_analysis
 from backend.pipeline import COLLECTOR_FILE, run_pipeline
@@ -83,7 +85,6 @@ def analyze():
         )
     result["id"] = save_analysis(result)
     return result
-
 
 @app.post("/import")
 async def import_collector(file: UploadFile = File(...)):
@@ -169,3 +170,51 @@ app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend
 def home():
     """Redirige la racine vers le tableau de bord."""
     return RedirectResponse(url="/app/")
+
+# --------------------------------------------------------------------------- #
+# Agent IA (module d'Amir : agent/sentinelpath_agent.py)
+# --------------------------------------------------------------------------- #
+class ChatTurn(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(max_length=8000)
+
+
+class ChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+    analysis_id: int | None = None
+    history: list[ChatTurn] = Field(default_factory=list, max_length=12)
+
+
+@app.post("/chat")
+def chat(request: ChatRequest):
+    """Pose une question a l'agent IA, qui interroge lui-meme cette API puis explique."""
+    try:
+        import sentinelpath_agent as agent  # dossier agent/ deja ajoute par pipeline.py
+        from groq import APIConnectionError, APIStatusError, Groq, RateLimitError
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Agent IA indisponible : module manquant ({e.name}). "
+                   "Installez-le : python -m pip install groq",
+        )
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent IA indisponible : la variable d'environnement GROQ_API_KEY n'est pas définie.",
+        )
+
+    question = request.question
+    if request.analysis_id:
+        question = f"(L'utilisateur consulte l'analyse #{request.analysis_id}.) {question}"
+    history = [turn.model_dump() for turn in request.history]
+
+    try:
+        answer = agent.ask(Groq(api_key=api_key), history, question)
+    except RateLimitError:
+        raise HTTPException(status_code=429, detail="Limite de requêtes Groq atteinte : réessayez dans une minute.")
+    except APIConnectionError:
+        raise HTTPException(status_code=503, detail="Impossible de joindre l'API Groq (connexion Internet ?).")
+    except APIStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Erreur de l'API Groq (HTTP {e.status_code}).")
+    return {"answer": answer}
