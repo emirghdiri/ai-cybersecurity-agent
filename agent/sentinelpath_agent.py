@@ -27,13 +27,14 @@ import sys
 from collections import Counter
 
 import requests
-from groq import Groq, APIConnectionError, APIStatusError, RateLimitError
+from groq import Groq, APIConnectionError, APIStatusError, BadRequestError, RateLimitError
 
 API_URL = os.environ.get("SENTINELPATH_API_URL", "http://127.0.0.1:8000").rstrip("/")
 MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
 
 HTTP_TIMEOUT = 30           # secondes
 MAX_TOOL_ROUNDS = 6         # appels d'outils max par question (evite les boucles infinies)
+MAX_TOOL_CALL_RETRIES = 2   # nouveaux essais si Groq rejette un appel d'outil mal forme
 MAX_TOOL_OUTPUT = 12_000    # caracteres max renvoyes au modele par outil (limite de tokens)
 MAX_HISTORY_TURNS = 6       # questions/reponses gardees en memoire de conversation
 SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
@@ -165,10 +166,13 @@ AVAILABLE_FUNCTIONS = {
     "get_risk_analysis": get_risk_analysis,
 }
 
+# Tous les parametres optionnels acceptent null : gpt-oss envoie souvent
+# "analysis_id": null pour dire "la plus recente", et Groq rejette l'appel
+# (HTTP 400 tool_use_failed) si le schema ne l'autorise pas.
 ANALYSIS_ID_PARAM = {
-    "type": "integer",
+    "type": ["integer", "null"],
     "description": "Identifiant d'une analyse precise (voir list_analyses). "
-                   "Ne pas renseigner pour utiliser la plus recente.",
+                   "Ne pas renseigner (ou null) pour utiliser la plus recente.",
 }
 
 TOOLS = [
@@ -202,16 +206,16 @@ TOOLS = [
                 "properties": {
                     "analysis_id": ANALYSIS_ID_PARAM,
                     "severity": {
-                        "type": "string",
-                        "enum": SEVERITIES,
+                        "type": ["string", "null"],
+                        "enum": SEVERITIES + [None],
                         "description": "Ne lister que les CVE de cette severite.",
                     },
                     "service": {
-                        "type": "string",
+                        "type": ["string", "null"],
                         "description": "Ne garder qu'un service (nom ou port, ex. 'apache', 'mysql', '5000').",
                     },
                     "limit": {
-                        "type": "integer",
+                        "type": ["integer", "null"],
                         "description": "Nombre de CVE detaillees par service (defaut 3, max 15).",
                     },
                 },
@@ -272,7 +276,7 @@ TOOLS = [
                 "properties": {
                     "analysis_id": ANALYSIS_ID_PARAM,
                     "limit": {
-                        "type": "integer",
+                        "type": ["integer", "null"],
                         "description": "Nombre de chemins renvoyes (defaut 10).",
                     },
                 },
@@ -353,19 +357,34 @@ def assistant_message_to_dict(msg):
     return out
 
 
+def create_completion(client, messages, retries=MAX_TOOL_CALL_RETRIES):
+    """
+    Appel au modele. Si Groq rejette un appel d'outil mal forme genere par le
+    modele (HTTP 400 'tool_use_failed'), on relance : le modele etant
+    non deterministe, il produit en general un appel valide au 2e essai.
+    """
+    for attempt in range(retries + 1):
+        try:
+            return client.chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+                temperature=0.2,  # reponses factuelles et stables
+            )
+        except BadRequestError as e:
+            if "tool_use_failed" not in str(e) or attempt == retries:
+                raise
+            print("  [!] Appel d'outil mal forme par le modele, nouvel essai...")
+
+
 def ask(client, history, question):
     """Traite une question : le modele appelle les outils necessaires puis repond."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history,
                 {"role": "user", "content": question}]
 
     for _ in range(MAX_TOOL_ROUNDS):
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
-            temperature=0.2,  # reponses factuelles et stables
-        )
+        response = create_completion(client, messages)
         msg = response.choices[0].message
         if not msg.tool_calls:
             return msg.content or "(reponse vide du modele)"
