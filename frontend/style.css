@@ -1,0 +1,83 @@
+/* SentinelPath – tableau de bord, theme sombre "neon" */
+:root { --bg: #050d1a; --panel: #0b1a2e; --line: #15406b; --neon: #29b6f6; --text: #d9e8ff; --muted: #7f9bb8; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: var(--bg); color: var(--text); }
+a { color: var(--neon); }
+
+header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 14px 24px;
+         background: linear-gradient(90deg, #071629, #0b2545); border-bottom: 1px solid var(--line); }
+header h1 { margin: 0; font-size: 24px; color: #fff; }
+header h1 span { color: var(--neon); text-shadow: 0 0 10px rgba(41, 182, 246, 0.7); }
+.subtitle { color: var(--muted); font-size: 14px; }
+.toolbar { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+button { background: transparent; color: var(--neon); border: 1px solid var(--neon); border-radius: 6px;
+         padding: 8px 14px; cursor: pointer; font-size: 14px; font-weight: 600;
+         box-shadow: 0 0 8px rgba(41, 182, 246, 0.35); }
+button:hover { background: rgba(41, 182, 246, 0.12); }
+button:disabled { opacity: 0.5; cursor: wait; }
+select, input[type="text"] { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+         font-size: 14px; background: #08162a; color: var(--text); }
+
+nav { display: flex; gap: 22px; padding: 10px 24px; background: rgba(5, 13, 26, 0.95);
+      border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }
+nav a { text-decoration: none; font-weight: 600; }
+
+#status { margin: 12px 24px 0; min-height: 1em; color: var(--muted); }
+#status.error { color: #ff5252; font-weight: 600; }
+
+main { padding: 0 24px 40px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 22px;
+          margin-top: 18px; box-shadow: 0 0 18px rgba(41, 182, 246, 0.08); scroll-margin-top: 60px; }
+h2 { margin-top: 0; font-size: 18px; color: #fff; }
+.hint { color: var(--muted); font-size: 13px; }
+
+/* Cartes de chiffres-cles */
+.cards { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+.card { flex: 1 1 150px; border: 1px solid var(--line); border-radius: 10px; padding: 14px; background: #08162a; }
+.card .value { display: block; font-size: 30px; font-weight: 700; color: var(--neon); }
+.card .label { color: var(--muted); font-size: 13px; }
+.card.critical .value { color: #ff3b3b; text-shadow: 0 0 10px rgba(255, 59, 59, 0.6); }
+
+/* Couleurs de gravite (badges, barres, cartes de chemins) */
+.badge { display: inline-block; min-width: 76px; text-align: center; padding: 2px 8px; border-radius: 10px;
+         font-size: 12px; font-weight: 700; color: #050d1a; background: #607d8b; }
+.critical { --sev: #ff3b3b; } .high { --sev: #ff9800; } .medium { --sev: #ffd600; } .low { --sev: #00e676; }
+.badge.critical, .badge.high, .badge.medium, .badge.low, .fill { background: var(--sev); }
+
+.bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.bar { flex: 1; height: 12px; background: #10243d; border-radius: 6px; overflow: hidden; }
+.fill { height: 100%; box-shadow: 0 0 8px var(--sev); }
+.bar-count { width: 40px; text-align: right; font-weight: 600; }
+
+/* Tableau des vulnerabilites */
+.table-wrap { max-height: 480px; overflow: auto; margin-top: 10px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { position: sticky; top: 0; background: #0e223b; text-align: left; color: #fff; }
+th, td { padding: 7px 8px; border-bottom: 1px solid #12304f; vertical-align: top; }
+td.desc { color: var(--muted); max-width: 520px; }
+
+/* Chemins d'attaque */
+.path-card { border: 1px solid var(--line); border-left: 6px solid var(--sev, #607d8b); border-radius: 8px;
+             padding: 10px 14px; margin: 10px 0; background: #08162a; cursor: pointer; }
+.path-card:hover, .path-card.selected { box-shadow: 0 0 12px var(--sev, var(--neon)); }
+.path-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.path-nodes { margin: 8px 0; font-family: Consolas, monospace; }
+.node { background: #10243d; border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+
+/* Graphe */
+#cy { height: 560px; border: 1px solid var(--line); border-radius: 10px;
+      background: radial-gradient(circle at 50% 30%, #0d2747 0%, #050d1a 75%); }
+#graph-legend { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; font-size: 13px; margin-bottom: 8px; }
+#graph-legend div { display: flex; align-items: center; gap: 6px; }
+#graph-legend img { width: 22px; height: 22px; }
+#graph-legend .dot { width: 12px; height: 12px; border-radius: 50%; }
+#graph-legend .dash { width: 22px; border-top: 2px dashed var(--neon); }
+
+/* Chat */
+#chat-log { height: 220px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px;
+            padding: 10px; margin-bottom: 10px; background: #08162a; }
+.message { margin: 6px 0; line-height: 1.4; }
+.message.user strong { color: var(--neon); }
+.message.simulated { color: var(--muted); font-style: italic; }
+#chat-form { display: flex; gap: 8px; }
+#chat-input { flex: 1; }

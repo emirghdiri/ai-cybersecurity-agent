@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SentinelPath – Tableau de bord</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Sentinel<span>Path</span></h1>
+    <span class="subtitle">Analyse de vulnérabilités et de chemins d'attaque</span>
+    <div class="toolbar">
+      <label>Analyse :
+        <select id="analysis-select"></select>
+      </label>
+      <button id="analyze-btn">Lancer une analyse</button>
+    </div>
+  </header>
+
+  <nav>
+    <a href="#dashboard">Vue d'ensemble</a>
+    <a href="#vulnerabilities">Vulnérabilités</a>
+    <a href="#paths">Chemins d'attaque</a>
+    <a href="#graph">Graphe</a>
+    <a href="#chat">Agent IA</a>
+  </nav>
+
+  <p id="status"></p>
+
+  <main>
+    <section id="dashboard">
+      <h2>Vue d'ensemble</h2>
+      <div id="cards" class="cards"></div>
+      <div id="severity-bars"></div>
+    </section>
+
+    <section id="vulnerabilities">
+      <h2>Vulnérabilités</h2>
+      <label>Gravité :
+        <select id="severity-filter">
+          <option value="ALL">Toutes</option>
+          <option value="CRITICAL">CRITICAL</option>
+          <option value="HIGH">HIGH</option>
+          <option value="MEDIUM">MEDIUM</option>
+          <option value="LOW">LOW</option>
+        </select>
+      </label>
+      <span id="vuln-count"></span>
+      <div class="table-wrap"><table id="vuln-table"></table></div>
+    </section>
+
+    <section id="paths">
+      <h2>Chemins d'attaque classés par risque</h2>
+      <p class="hint">Cliquez sur un chemin pour le surligner dans le graphe.</p>
+      <div id="path-list"></div>
+    </section>
+
+    <section id="graph">
+      <h2>Graphe d'attaque</h2>
+      <div id="graph-legend"></div>
+      <label class="hint"><input type="checkbox" id="show-isolated">
+        Afficher les services isolés (sans relation)</label>
+      <div id="cy"></div>
+    </section>
+
+    <section id="chat">
+      <h2>Agent IA</h2>
+      <div id="chat-log"></div>
+      <form id="chat-form">
+        <input id="chat-input" type="text" placeholder="Ex. : quel est le chemin le plus dangereux ?" autocomplete="off">
+        <button type="submit">Envoyer</button>
+      </form>
+    </section>
+  </main>
+
+  <!-- app.js en premier : il definit les outils communs utilises par les autres fichiers -->
+  <script src="vendor/cytoscape.min.js"></script>
+  <script src="app.js"></script>
+  <script src="dashboard.js"></script>
+  <script src="vulnerabilities.js"></script>
+  <script src="paths.js"></script>
+  <script src="graph.js"></script>
+  <script src="chat.js"></script>
+  <script>refresh();</script>
+</body>
+</html>

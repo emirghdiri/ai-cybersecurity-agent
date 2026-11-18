@@ -1,16 +1,20 @@
 import json
+from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.database import get_analysis, init_db, list_analyses, save_analysis
 from backend.pipeline import COLLECTOR_FILE, run_pipeline
 
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 MAX_IMPORT_SIZE = 1_000_000  # 1 Mo : largement suffisant pour un collector_output.json
 
 app = FastAPI(
     title="SentinelPath API",
     description="API de l'agent d'analyse de vulnérabilités et de chemins d'attaque",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 init_db()  # cree la table SQLite au demarrage si elle n'existe pas
@@ -79,6 +83,7 @@ def analyze():
         )
     result["id"] = save_analysis(result)
     return result
+
 
 @app.post("/import")
 async def import_collector(file: UploadFile = File(...)):
@@ -154,3 +159,13 @@ def risk_analysis(analysis_id: int | None = None):
         )
     return result["risk_analysis"]
 
+
+# Tableau de bord web : les fichiers de frontend/ sont servis par la meme API,
+# donc pas de probleme CORS et une seule commande a lancer pour la demo.
+app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    """Redirige la racine vers le tableau de bord."""
+    return RedirectResponse(url="/app/")
