@@ -82,12 +82,57 @@ def list_analyses():
     return api_get("/analyses")
 
 
+# Nom courant -> noms techniques EXACTS utilises dans les donnees (Nmap / collecteur).
+# Uniquement pour la recherche : "apache" doit trouver "httpd". La correspondance est
+# exacte et non par sous-chaine, sinon "httpd" capturerait aussi "werkzeug httpd" (Flask).
+SERVICE_ALIASES = {
+    "apache": ["httpd", "apache httpd", "apache"],
+    "apache2": ["httpd", "apache httpd", "apache"],
+    "flask": ["werkzeug httpd", "werkzeug", "flask", "flask-api"],
+    "werkzeug": ["werkzeug httpd", "werkzeug"],
+    "ssh": ["openssh", "ssh"],
+    "sshd": ["openssh", "ssh"],
+    "phpmyadmin": ["phpmyadmin"],
+    "pma": ["phpmyadmin"],
+    "mysql": ["mysql", "mariadb"],
+    "mariadb": ["mariadb", "mysql"],
+    "postgres": ["postgresql", "postgres"],
+    "redis": ["redis"],
+    "nginx": ["nginx"],
+}
+
+
+def service_matches(query, name, port, container=None):
+    """
+    Le service correspond-il a la recherche ?
+      - un numero cherche le port exact ("80" ne doit pas trouver 8080) ;
+      - sinon : alias exact (apache -> httpd), ou nom/conteneur contenant le texte cherche.
+    """
+    q = query.lower().strip()
+    name = (name or "").lower().strip()
+    if q.isdigit():
+        return str(port) == q
+    if name in SERVICE_ALIASES.get(q, []):
+        return True
+    return q in name or (container is not None and q in container.lower())
+
+
+def containers_by_port(analysis_id=None):
+    """Port -> nom du conteneur, d'apres le graphe (pour chercher par ex. 'web-server')."""
+    try:
+        graph = api_get("/graph", analysis_id)
+    except BackendError:
+        return {}
+    return {n["port"]: n["id"] for n in graph.get("nodes", []) if n.get("port") is not None}
+
+
 def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
     """GET /vulnerabilities, resume : totaux par severite + CVE les plus graves par service."""
     data = api_get("/vulnerabilities", analysis_id)
 
     severity = severity.upper() if isinstance(severity, str) and severity.strip() else None
     service = service.lower().strip() if isinstance(service, str) and service.strip() else None
+    containers = containers_by_port(analysis_id)
     try:
         limit = max(1, min(int(limit), 15))
     except (TypeError, ValueError):
@@ -101,8 +146,8 @@ def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
             counts = Counter(v.get("severity") or "N/A" for v in vulns)
             total.update(counts)
 
-            label = f"{svc.get('name', '')} {svc.get('port', '')}".lower()
-            if service and service not in label:
+            container = containers.get(svc.get("port"))
+            if service and not service_matches(service, svc.get("name"), svc.get("port"), container):
                 continue
 
             selected = [v for v in vulns if not severity or v.get("severity") == severity]
@@ -110,6 +155,7 @@ def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
 
             services_out.append({
                 "host": host.get("hostname"),
+                "container": container or NOT_COLLECTED,
                 "port": svc.get("port"),
                 "service": svc.get("name"),
                 "version": svc.get("version"),
@@ -129,7 +175,17 @@ def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
                 ],
             })
 
-    return {
+    result = {}
+    if service and not services_out:
+        # Distinguer "service absent de l'infrastructure" de "service present sans CVE".
+        present = sorted({f"{s.get('name')} (port {s.get('port')})"
+                          for h in data.get("hosts", []) for s in h.get("services", [])})
+        result["message"] = (
+            f"Aucun service ne correspond a '{service}' dans cette analyse : ce service "
+            f"n'a pas ete detecte (ce n'est PAS un service present sans CVE). "
+            f"Services presents : {', '.join(present)}."
+        )
+    return result | {
         "scan_date": data.get("scan_date"),
         "total_cves": sum(total.values()),
         "total_by_severity": {s: total[s] for s in SEVERITIES if total[s]},
@@ -269,7 +325,10 @@ TOOLS = [
                     },
                     "service": {
                         "type": ["string", "null"],
-                        "description": "Ne garder qu'un service (nom ou port, ex. 'apache', 'mysql', '5000').",
+                        "description": "Ne garder qu'un service : nom courant ou technique ('apache' "
+                                       "trouve aussi 'httpd', 'flask' trouve 'werkzeug httpd', "
+                                       "'ssh' trouve 'openssh'), nom de conteneur ('web-server') "
+                                       "ou numero de port exact ('80').",
                     },
                     "limit": {
                         "type": ["integer", "null"],
@@ -440,6 +499,17 @@ def create_completion(client, messages, retries=MAX_TOOL_CALL_RETRIES):
             print("  [!] Appel d'outil mal forme par le modele, nouvel essai...")
 
 
+def normalize_answer(text):
+    """
+    Remplace les tirets typographiques du modele (U+2011 insecable, U+2010, U+2013)
+    par le tiret ASCII : sinon "CVE‑2021‑41773" s'affiche correctement mais ne peut
+    pas etre copie-colle dans une recherche NVD, ni compare aux donnees.
+    """
+    if not text:
+        return text
+    return text.translate({0x2010: "-", 0x2011: "-", 0x2013: "-"})
+
+
 def ask(client, history, question):
     """Traite une question : le modele appelle les outils necessaires puis repond."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history,
@@ -449,7 +519,7 @@ def ask(client, history, question):
         response = create_completion(client, messages)
         msg = response.choices[0].message
         if not msg.tool_calls:
-            return msg.content or "(reponse vide du modele)"
+            return normalize_answer(msg.content) or "(reponse vide du modele)"
 
         messages.append(assistant_message_to_dict(msg))
         for call in msg.tool_calls:
