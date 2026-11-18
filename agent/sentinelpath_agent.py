@@ -138,14 +138,66 @@ def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
     }
 
 
+# Les champs absents ou null sont remplaces par ces textes explicites : un "trou"
+# dans les donnees pousse le modele a le combler avec une valeur plausible
+# (ex. "port 5432 PostgreSQL"), alors qu'un texte "non disponible" est recopie tel quel.
+NOT_COLLECTED = "NON DISPONIBLE (aucune donnee collectee)"
+NO_PUBLISHED_PORT = "AUCUN PORT PUBLIE (non expose a l'exterieur)"
+
+
+def node_facts(graph):
+    """
+    Faits connus sur chaque noeud du graphe, avec les absences rendues explicites.
+    Les ports d'acces internes viennent des aretes (ex. api-service -> database:33060
+    via un reseau Docker interne) : ce sont des donnees collectees, pas des deductions.
+    """
+    internal_access = {}
+    for e in graph.get("edges", []):
+        if e.get("source") == "kali":
+            continue
+        src, dst, port, via = e.get("source"), e.get("target"), e.get("port"), e.get("via")
+        port_txt = f"sur son port {port}" if port is not None else "(port non disponible)"
+        # Phrase generee par le code : evite que le modele attribue le port a la source.
+        internal_access.setdefault(dst, []).append({
+            "from_node": src,
+            "target_port": port if port is not None else NOT_COLLECTED,
+            "network": via,
+            "fact": f"{src} peut joindre {dst} {port_txt} (reseau {via}).",
+        })
+
+    facts = {}
+    for n in graph.get("nodes", []):
+        if n.get("role") == "attacker":
+            continue
+        exposed = n.get("exposed_externally") is True
+        port = n.get("port")
+        facts[n["id"]] = {
+            "exposed_externally": exposed,
+            "published_port": port if exposed and port is not None
+                              else (NO_PUBLISHED_PORT if not exposed else NOT_COLLECTED),
+            "listening_port": port if port is not None else NOT_COLLECTED,
+            "service": n.get("name") or NOT_COLLECTED,
+            "version": n.get("version") or NOT_COLLECTED,
+            "reachable_internally_from": internal_access.get(n["id"], []),
+        }
+    return facts
+
+
 def get_attack_graph(analysis_id=None):
     """GET /graph : noeuds (services, exposition) et aretes (relations reseau)."""
-    return api_get("/graph", analysis_id)
+    graph = api_get("/graph", analysis_id)
+    return {"nodes": node_facts(graph), "edges": graph.get("edges", [])}
 
 
 def get_attack_paths(analysis_id=None):
-    """GET /attack-paths : chemins d'attaque depuis l'attaquant vers chaque cible."""
-    return api_get("/attack-paths", analysis_id)
+    """GET /attack-paths (+ GET /graph pour les faits connus sur chaque noeud des chemins)."""
+    targets = api_get("/attack-paths", analysis_id)
+    facts = node_facts(api_get("/graph", analysis_id))
+    on_paths = {node for t in targets for p in t.get("paths", []) for node in p.get("path", [])}
+    return {
+        "targets": targets,
+        "node_facts": {n: facts[n] for n in sorted(on_paths) if n in facts},
+    }
 
 
 def get_risk_analysis(analysis_id=None, limit=10):
@@ -155,6 +207,11 @@ def get_risk_analysis(analysis_id=None, limit=10):
         limit = max(1, min(int(limit), 50))
     except (TypeError, ValueError):
         limit = 10
+    for path in data:
+        for d in path.get("details", []):
+            for field in ("port", "service", "version"):
+                if d.get(field) is None:
+                    d[field] = NOT_COLLECTED
     return {"total_paths": len(data), "paths_by_risk": data[:limit]}
 
 
@@ -249,8 +306,10 @@ TOOLS = [
                 "Tous les chemins d'attaque possibles depuis l'attaquant vers chaque cible "
                 "d'interet, avec la raison du choix de la cible ('not_exposed' = actif interne "
                 "non expose comme une base de donnees, 'pivot' = point d'entree expose relie au "
-                "reseau interne) et une description etape par etape. Faits structurels seulement, "
-                "sans score. A utiliser pour : 'quels chemins mènent a la base', 'comment un "
+                "reseau interne) et une description etape par etape, plus les faits connus sur "
+                "chaque noeud traverse (port publie, ports d'acces internes, service, version ; "
+                "'NON DISPONIBLE' si non collecte). Faits structurels seulement, sans score. "
+                "A utiliser pour : 'quels chemins mènent a la base', 'comment un "
                 "attaquant peut atteindre X', 'combien de chemins d'attaque'."
             ),
             "parameters": {
@@ -291,6 +350,9 @@ SYSTEM_PROMPT = """Tu es l'agent IA de SentinelPath, un outil d'analyse de vulne
 Principe absolu : les outils calculent, toi tu expliques.
 - Pour toute question sur l'infrastructure (services, CVE, chemins, risque, historique), appelle TOUJOURS au moins un outil avant de repondre. Ne reponds jamais de memoire.
 - N'invente JAMAIS une CVE, un score CVSS, un score de risque, une version, un service ou un chemin d'attaque. Utilise uniquement les valeurs renvoyees par les outils, recopiees exactement.
+- Donnees manquantes : si un champ (port, service, version...) est absent, null, ou vaut "NON DISPONIBLE" / "AUCUN PORT PUBLIE" dans le resultat d'un outil, dis explicitement que cette information n'est pas disponible ou que le port n'est pas publie. Ne le remplace JAMAIS par une valeur plausible, meme pour completer un tableau proprement : ecris "non disponible" dans la case.
+- Ne deduis jamais un service ou une version a partir d'un numero de port ou du nom d'un noeud (un noeud nomme "database" n'est pas forcement PostgreSQL ou MySQL ; le port 6379 ne prouve pas Redis). Seuls les champs "service" et "version" font foi. N'ajoute donc jamais de nom de service entre parentheses apres un port : ecris "port 6379 (service non identifie)", pas "port 6379 (Redis)".
+- Distingue le port publie vers l'exterieur ("published_port") des acces internes ("reachable_internally_from") : un actif non expose peut etre joignable en interne. Dans ce cas, "target_port" est le port de la CIBLE (pas celui de "from_node") ; reprends la phrase du champ "fact" telle quelle.
 - Si un outil renvoie une erreur ou si l'information n'existe pas dans les donnees, dis-le clairement et indique quoi faire (par exemple lancer le backend ou une analyse). N'essaie pas de deviner.
 - Pour les recommandations de securite, appuie-toi sur les faits renvoyes (CVE concernees, versions, chemins, liens de correctif) et propose des mesures concretes et reconnues (mise a jour vers une version corrigee, reduction de l'exposition, segmentation reseau, controle d'acces...). Precise que ce sont des recommandations generales a valider.
 - Cite les identifiants exacts (CVE, noms des services/conteneurs, scores) pour que l'utilisateur puisse verifier.
