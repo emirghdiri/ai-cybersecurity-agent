@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SentinelPath – Tableau de bord</title>
-  <link rel="stylesheet" href="style.css?v=2">
+  <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
   <header>
@@ -43,6 +43,7 @@
           <option value="HIGH">HIGH</option>
           <option value="MEDIUM">MEDIUM</option>
           <option value="LOW">LOW</option>
+          <option value="KEV">Exploitées (CISA KEV)</option>
         </select>
       </label>
       <span id="vuln-count"></span>
@@ -81,12 +82,12 @@
 
   <!-- app.js en premier : il definit les outils communs utilises par les autres fichiers -->
   <script src="vendor/cytoscape.min.js"></script>
-  <script src="app.js?v=2"></script>
-  <script src="dashboard.js?v=2"></script>
-  <script src="vulnerabilities.js?v=2"></script>
-  <script src="paths.js?v=2"></script>
-  <script src="graph.js?v=2"></script>
-  <script src="chat.js?v=2"></script>
+  <script src="app.js?v=3"></script>
+  <script src="dashboard.js?v=3"></script>
+  <script src="vulnerabilities.js?v=3"></script>
+  <script src="paths.js?v=3"></script>
+  <script src="graph.js?v=3"></script>
+  <script src="chat.js?v=3"></script>
   <script>refresh();</script>
 </body>
 </html>

@@ -47,7 +47,8 @@ function cveRows(vulnReport) {
   for (const host of vulnReport.hosts || []) {
     for (const svc of host.services || []) {
       for (const cve of svc.vulnerabilities || []) {
-        rows.push({ service: svc.name, port: svc.port, version: svc.version, ...cve });
+        rows.push({ service: svc.name, port: svc.port, version: svc.version,
+                    container: svc.container, exposed: svc.exposed_externally, ...cve });
       }
     }
   }

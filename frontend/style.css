@@ -43,6 +43,8 @@ h2 { margin-top: 0; font-size: 18px; color: #fff; }
          font-size: 12px; font-weight: 700; color: #050d1a; background: #607d8b; }
 .critical { --sev: #ff3b3b; } .high { --sev: #ff9800; } .medium { --sev: #ffd600; } .low { --sev: #00e676; }
 .badge.critical, .badge.high, .badge.medium, .badge.low, .fill { background: var(--sev); }
+/* CVE du catalogue CISA KEV (exploitees par de vrais attaquants) */
+.badge.kev { min-width: 0; margin-left: 6px; background: #b388ff; color: #050d1a; }
 
 .bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
 .bar { flex: 1; height: 12px; background: #10243d; border-radius: 6px; overflow: hidden; }

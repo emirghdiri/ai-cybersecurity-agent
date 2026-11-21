@@ -5,7 +5,7 @@ let vulnRows = [];
 function renderVulnTable() {
   const filter = document.getElementById("severity-filter").value;
   const rows = vulnRows
-    .filter(r => filter === "ALL" || r.severity === filter)
+    .filter(r => filter === "ALL" || (filter === "KEV" ? r.kev : r.severity === filter))
     .sort((a, b) => (b.cvss ?? 0) - (a.cvss ?? 0));
 
   document.getElementById("vuln-count").textContent = `${rows.length} CVE affichée(s)`;
@@ -18,9 +18,10 @@ function renderVulnTable() {
         <td><span class="badge ${severityClass(r.severity)}">${esc(r.severity || "N/A")}</span></td>
         <td>${esc(r.cvss ?? "–")}</td>
         <td><a href="https://nvd.nist.gov/vuln/detail/${encodeURIComponent(r.id)}" target="_blank"
-               rel="noopener">${esc(r.id)}</a></td>
-        <td>${esc(r.service)} ${esc(r.version || "")}</td>
-        <td>${esc(r.port)}</td>
+               rel="noopener">${esc(r.id)}</a>
+            ${r.kev ? `<span class="badge kev" title="Catalogue CISA KEV : exploitée par de vrais attaquants">exploitée</span>` : ""}</td>
+        <td>${r.container ? `<strong>${esc(r.container)}</strong><br>` : ""}${esc(r.service)} ${esc(r.version || "")}</td>
+        <td>${esc(r.port)}${r.exposed === false ? ` <span class="hint">(interne)</span>` : ""}</td>
         <td class="desc">${esc(r.description)}</td>
       </tr>`).join("")}
     </tbody>`;

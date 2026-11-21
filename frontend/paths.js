@@ -13,6 +13,7 @@ registerView(({ risks }) => {
         <span class="badge ${severityClass(r.severity)}">${esc(r.severity)}</span>
         <strong>Risque ${esc(r.risk_score)}</strong>
         <span class="hint">cible : ${esc(r.target)} (${esc(r.reason)}) – CVE principale : ${esc(r.worst_cve || "aucune")}</span>
+        ${(r.exploited_cves || []).length ? `<span class="badge kev" title="Le chemin traverse des CVE du catalogue CISA KEV (+${esc(r.kev_bonus)} au score)">${new Set(r.exploited_cves.map(e => e.id)).size} CVE exploitée(s)</span>` : ""}
       </div>
       <div class="path-nodes">${r.path.map(n => `<span class="node">${esc(n)}</span>`).join(" → ")}</div>
       <p>${esc(r.description)}</p>
