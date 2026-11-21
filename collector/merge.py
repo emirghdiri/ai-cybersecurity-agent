@@ -22,6 +22,7 @@ Usage :
 
 import argparse
 import json
+import re
 import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -119,6 +120,53 @@ def nmap_only_service(port, proto, info):
     }
 
 
+def version_from_tag(tag):
+    """
+    Version exploitable a partir d'une etiquette d'image Docker, ou None.
+      '2.4.49' -> '2.4.49'   '7.2-alpine' -> '7.2'   '5.7' -> '5.7'
+      'latest', '7', 'bookworm' -> None (pas assez precis : on ne devine pas)
+    """
+    if not tag or tag in NOT_A_VERSION:
+        return None
+    m = re.match(r"^(\d+\.\d+(?:\.\d+)*)", str(tag))
+    return m.group(1) if m else None
+
+
+def internal_container_services(inventory, known_containers):
+    """
+    Conteneurs INTERNES (aucun port publie) : invisibles pour le scan Nmap externe et
+    absents des ports en ecoute de l'hote. Leur logiciel et leur version sont deduits de
+    leur image Docker (ex. backup-server -> httpd:2.4.49), sans rien inventer : si
+    l'etiquette n'est pas une version precise ('latest'), la version reste inconnue.
+    Un seul service par conteneur (son plus petit port interne), pour ne pas compter
+    deux fois les memes CVE (ex. mysql expose 3306 et 33060).
+    """
+    services = []
+    for c in inventory.get("containers", []):
+        name = c.get("name")
+        if not name or name in known_containers:
+            continue
+        internal = sorted(p["container_port"] for p in c.get("ports", [])
+                          if not p.get("published") and isinstance(p.get("container_port"), int))
+        if not internal or any(p.get("published") for p in c.get("ports", [])):
+            continue
+        image_name = (c.get("image_name") or "").rsplit("/", 1)[-1].lower() or "unknown"
+        version = version_from_tag(c.get("image_tag"))
+        services.append({
+            "port": internal[0],
+            "protocol": next((p["protocol"] for p in c["ports"]
+                              if p["container_port"] == internal[0]), "tcp"),
+            "name": image_name,
+            "version": version,
+            "version_source": "docker-image" if version else None,
+            "process": None,
+            "container": name,
+            "exposed_externally": False,
+            "nmap_cpe": None,
+        })
+    return services
+
+
 def build_services(inventory, nmap_ports):
     services, seen = [], set()
     for svc in inventory.get("services", []):
@@ -130,7 +178,11 @@ def build_services(inventory, nmap_ports):
         if (port, proto) not in seen:
             services.append(nmap_only_service(port, proto, info))
 
-    return sorted(services, key=lambda s: (s["protocol"], s["port"]))
+    known = {s["container"] for s in services if s.get("container")}
+    services += internal_container_services(inventory, known)
+
+    return sorted(services, key=lambda s: (s["exposed_externally"] is False,
+                                           s["protocol"], s["port"]))
 
 
 # --------------------------------------------------------------------------- #
@@ -176,6 +228,21 @@ def build_relations(services, inventory, attacker):
 # --------------------------------------------------------------------------- #
 # Programme principal
 # --------------------------------------------------------------------------- #
+def merge(inventory, nmap_ports, attacker="kali"):
+    """Fusion complete (utilisee en ligne de commande et par backend/live_collector.py)."""
+    services = build_services(inventory, nmap_ports)
+    return {
+        "scan_date": datetime.now().isoformat(timespec="seconds"),
+        "hosts": [{
+            "hostname": inventory.get("hostname"),
+            "ip": inventory.get("ip"),
+            "os": (inventory.get("os") or {}).get("name"),
+            "services": services,
+        }],
+        "relations": build_relations(services, inventory, attacker),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fusionne local_inventory.json et un scan Nmap XML en collector_output.json")
@@ -189,21 +256,8 @@ def main():
                         help="nom de la machine attaquante (défaut : kali)")
     args = parser.parse_args()
 
-    inventory = load_inventory(args.inventory)
-    nmap_ports = parse_nmap(args.nmap)
-    services = build_services(inventory, nmap_ports)
-    relations = build_relations(services, inventory, args.attacker)
-
-    output = {
-        "scan_date": datetime.now().isoformat(timespec="seconds"),
-        "hosts": [{
-            "hostname": inventory.get("hostname"),
-            "ip": inventory.get("ip"),
-            "os": (inventory.get("os") or {}).get("name"),
-            "services": services,
-        }],
-        "relations": relations,
-    }
+    output = merge(load_inventory(args.inventory), parse_nmap(args.nmap), args.attacker)
+    services, relations = output["hosts"][0]["services"], output["relations"]
 
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)

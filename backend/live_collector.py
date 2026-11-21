@@ -2,10 +2,10 @@
 Collecte "live" de l'infrastructure par SSH (paramiko), sans import manuel :
 
   1. Kali   : sudo nmap -sV -T4 -p- -oX <fichier> <IP Ubuntu>   (vue externe)
-  2. Kali   -> PC -> Ubuntu : transfert du XML par SFTP (dans collector/)
+  2. Kali   -> PC : recuperation du XML par SFTP
   3. Ubuntu : python3 collector/local_inventory.py                (vue interne)
-              python3 collector/merge.py                          (fusion)
-  4. Ubuntu -> PC : recuperation de collector_output.json par SFTP
+              puis recuperation de local_inventory.json par SFTP
+  4. PC     : fusion avec collector/merge.py (version a jour du depot) -> collector_output
 
 Configuration (variables d'environnement, JAMAIS dans le code) :
   KALI_SSH_HOST, KALI_SSH_USER, KALI_SSH_PASSWORD   (ou KALI_SSH_KEY = chemin de cle privee)
@@ -217,13 +217,11 @@ def run_live_collection(config=None, log=print):
     config = config or load_config()
     kali, ubuntu = config["kali"], config["ubuntu"]
     project = config["project_dir"]
-    remote_xml = f"{project}/collector/nmap_scan.xml"
-    remote_output = f"{project}/collector_output.json"
     steps = []
 
     with tempfile.TemporaryDirectory(prefix="sentinelpath_") as tmp:
         local_xml = Path(tmp) / "nmap_scan.xml"
-        local_json = Path(tmp) / "collector_output.json"
+        local_inventory = Path(tmp) / "local_inventory.json"
 
         # 1. Scan Nmap depuis Kali
         log(f"[1/4] Scan Nmap de {config['target']} depuis Kali...")
@@ -248,46 +246,60 @@ def run_live_collection(config=None, log=print):
             raise LiveCollectorError("scan Nmap sur Kali", "le fichier recupere n'est pas un XML Nmap.")
         steps.append({"step": "nmap", "seconds": round(time.monotonic() - t0, 1)})
 
-        # 2-3. Envoi du XML sur Ubuntu, inventaire local puis fusion
-        log("[2/4] Envoi du scan sur Ubuntu...")
+        # 2. Inventaire local sur Ubuntu (seul script execute sur la VM)
+        log("[2/4] Inventaire local sur Ubuntu...")
         t0 = time.monotonic()
         client = connect(ubuntu)
         try:
             with client.open_sftp() as sftp:
                 try:
-                    sftp.stat(f"{project}/collector/merge.py")
+                    sftp.stat(f"{project}/collector/local_inventory.py")
                 except FileNotFoundError:
                     raise LiveCollectorError("verification du projet sur Ubuntu",
-                                             f"{project}/collector/merge.py introuvable : "
+                                             f"{project}/collector/local_inventory.py introuvable : "
                                              "definissez UBUNTU_PROJECT_DIR ou clonez le depot.")
-                sftp.put(str(local_xml), remote_xml)
-
-            log("[3/4] Inventaire local et fusion sur Ubuntu...")
-            q = shlex.quote
             run(client, ubuntu,
-                f"cd {q(project)} && python3 collector/local_inventory.py -o local_inventory.json "
-                f"&& python3 collector/merge.py --inventory local_inventory.json "
-                f"--nmap collector/nmap_scan.xml -o collector_output.json",
-                COMMAND_TIMEOUT, "inventaire et fusion sur Ubuntu")
+                f"cd {shlex.quote(project)} && "
+                f"python3 collector/local_inventory.py -o {shlex.quote(REMOTE_INVENTORY)}",
+                COMMAND_TIMEOUT, "inventaire local sur Ubuntu")
 
-            log("[4/4] Recuperation de collector_output.json...")
+            log("[3/4] Recuperation de l'inventaire...")
             with client.open_sftp() as sftp:
-                if sftp.stat(remote_output).st_size > MAX_COLLECTOR_SIZE:
-                    raise LiveCollectorError("recuperation du resultat",
-                                             "collector_output.json depasse 1 Mo.")
-                sftp.get(remote_output, str(local_json))
+                remote_inventory = f"{project}/{REMOTE_INVENTORY}"
+                if sftp.stat(remote_inventory).st_size > MAX_COLLECTOR_SIZE:
+                    raise LiveCollectorError("recuperation de l'inventaire",
+                                             "local_inventory.json depasse 1 Mo.")
+                sftp.get(remote_inventory, str(local_inventory))
         except (OSError, paramiko.SSHException) as e:
             raise LiveCollectorError("transfert SFTP avec Ubuntu", str(e))
         finally:
             client.close()
-        steps.append({"step": "inventory+merge", "seconds": round(time.monotonic() - t0, 1)})
+        steps.append({"step": "inventory", "seconds": round(time.monotonic() - t0, 1)})
 
+        # 3. Fusion sur CE PC, avec la version a jour de collector/merge.py
+        #    (la VM n'a pas besoin d'etre synchronisee avec le depot pour la fusion).
+        log("[4/4] Fusion inventaire + scan Nmap...")
         try:
-            data = json.loads(local_json.read_text(encoding="utf-8"))
+            inventory = json.loads(local_inventory.read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:
-            raise LiveCollectorError("lecture du resultat", f"collector_output.json invalide : {e}")
+            raise LiveCollectorError("lecture de l'inventaire", f"local_inventory.json invalide : {e}")
+        merge = _load_merge_module()
+        data = merge.merge(inventory, merge.parse_nmap(str(local_xml)), attacker="kali")
 
     return data, steps
+
+
+REMOTE_INVENTORY = "local_inventory.json"
+
+
+def _load_merge_module():
+    """Charge collector/merge.py (dossier sans __init__.py) comme module."""
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / "collector" / "merge.py"
+    spec = importlib.util.spec_from_file_location("sentinelpath_merge", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 if __name__ == "__main__":
