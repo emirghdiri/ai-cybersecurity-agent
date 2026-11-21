@@ -218,7 +218,20 @@ def risk_analysis(analysis_id: int | None = None):
 
 # Tableau de bord web : les fichiers de frontend/ sont servis par la meme API,
 # donc pas de probleme CORS et une seule commande a lancer pour la demo.
-app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+class NoCacheStaticFiles(StaticFiles):
+    """
+    Fichiers du frontend avec "Cache-Control: no-cache" : le navigateur revalide
+    chaque fichier (requete conditionnelle, reponse 304 si inchange) au lieu de
+    garder une ancienne version de app.js apres une mise a jour du site.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/app", NoCacheStaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
 
 @app.get("/", include_in_schema=False)
@@ -264,12 +277,13 @@ def chat(request: ChatRequest):
         question = f"(L'utilisateur consulte l'analyse #{request.analysis_id}.) {question}"
     history = [turn.model_dump() for turn in request.history]
 
+    trace = []  # outils appeles par l'agent : affiches comme "sources" dans le frontend
     try:
-        answer = agent.ask(Groq(api_key=api_key), history, question)
+        answer = agent.ask(Groq(api_key=api_key), history, question, trace=trace)
     except RateLimitError:
         raise HTTPException(status_code=429, detail="Limite de requêtes Groq atteinte : réessayez dans une minute.")
     except APIConnectionError:
         raise HTTPException(status_code=503, detail="Impossible de joindre l'API Groq (connexion Internet ?).")
     except APIStatusError as e:
         raise HTTPException(status_code=502, detail=f"Erreur de l'API Groq (HTTP {e.status_code}).")
-    return {"answer": answer}
+    return {"answer": answer, "tools": trace}

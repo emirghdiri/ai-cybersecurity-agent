@@ -245,7 +245,17 @@ async function renderGraph({ graph, risks, vulns }) {
   });
   // Clic sur le fond du graphe : on retire la mise en evidence.
   cy.on("tap", event => {
-    if (event.target === cy) cy.elements().removeClass("faded highlight");
+    if (event.target === cy) {
+      cy.elements().removeClass("faded highlight");
+      showGraphAsk(null);
+    }
+  });
+  // Clic sur un service : mise en evidence + proposition de demander a l'agent.
+  cy.on("tap", "node", event => {
+    const node = event.target;
+    if (node.isParent() || node.data("type") === "attacker" || node.id() === "kali") return;
+    highlightNode(node.id());
+    showGraphAsk(node.id());
   });
 
   document.getElementById("graph-legend").innerHTML = `
@@ -270,6 +280,31 @@ function highlightPath(path) {
       cy.getElementById(`${nodeId}->${path[i + 1]}`).removeClass("faded").addClass("highlight");
     }
   });
+}
+
+// Met en evidence un noeud et ses relations directes (appelee depuis le chat).
+function highlightNode(nodeId) {
+  if (!cy) return false;
+  const node = cy.getElementById(nodeId);
+  if (node.empty()) return false;
+  cy.elements().not(":parent").removeClass("highlight").addClass("faded");
+  node.closedNeighborhood().removeClass("faded");
+  node.connectedEdges().addClass("highlight");
+  return true;
+}
+
+// Bouton "Demander a l'agent" sous le graphe pour le service selectionne.
+function showGraphAsk(nodeId) {
+  const box = document.getElementById("graph-ask");
+  box.innerHTML = "";
+  if (!nodeId) return;
+  const button = document.createElement("button");
+  button.className = "ask-btn";
+  button.textContent = `Demander à l'agent d'analyser ${nodeId}`;
+  button.addEventListener("click", () => askAgent(
+    `Analyse le service ${nodeId} : son rôle dans les chemins d'attaque, ses vulnérabilités `
+    + `les plus graves (et si elles sont exploitées), et les mesures pour le protéger.`));
+  box.append(button);
 }
 
 document.getElementById("show-isolated").addEventListener("change", () => {

@@ -13,10 +13,22 @@ registerView(({ risks }) => {
         <span class="badge ${severityClass(r.severity)}">${esc(r.severity)}</span>
         <strong>Risque ${esc(r.risk_score)}</strong>
         <span class="hint">cible : ${esc(r.target)} (${esc(r.reason)}) – CVE principale : ${esc(r.worst_cve || "aucune")}</span>
+        ${(r.exploited_cves || []).length ? `<span class="badge kev" title="Le chemin traverse des CVE du catalogue CISA KEV (+${esc(r.kev_bonus)} au score)">${new Set(r.exploited_cves.map(e => e.id)).size} CVE exploitée(s)</span>` : ""}
       </div>
       <div class="path-nodes">${r.path.map(n => `<span class="node">${esc(n)}</span>`).join(" → ")}</div>
       <p>${esc(r.description)}</p>
+      <button type="button" class="ask-btn" data-ask="${i}">Expliquer ce chemin avec l'agent</button>
     </div>`).join("");
+
+  list.querySelectorAll(".ask-btn").forEach(button => {
+    button.addEventListener("click", event => {
+      event.stopPropagation();  // ne pas declencher la mise en evidence de la carte
+      const r = risks[Number(button.dataset.ask)];
+      askAgent(`Explique-moi le chemin d'attaque ${r.path.join(" → ")} (score de risque `
+             + `${r.risk_score}) : comment l'attaquant progresse étape par étape, quelles failles `
+             + `il exploite, et comment bloquer ce chemin en priorité.`);
+    });
+  });
 
   list.querySelectorAll(".path-card").forEach(card => {
     card.addEventListener("click", () => {

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SentinelPath – Tableau de bord</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
   <header>
@@ -31,6 +31,7 @@
     <section id="dashboard">
       <h2>Vue d'ensemble</h2>
       <div id="cards" class="cards"></div>
+      <div id="agent-summary" class="agent-summary"></div>
       <div id="severity-bars"></div>
     </section>
 
@@ -43,6 +44,7 @@
           <option value="HIGH">HIGH</option>
           <option value="MEDIUM">MEDIUM</option>
           <option value="LOW">LOW</option>
+          <option value="KEV">Exploitées (CISA KEV)</option>
         </select>
       </label>
       <span id="vuln-count"></span>
@@ -60,6 +62,7 @@
       <div id="graph-legend"></div>
       <label class="hint"><input type="checkbox" id="show-isolated">
         Afficher les services isolés (sans relation)</label>
+      <div id="graph-ask"></div>
       <div id="cy"></div>
     </section>
   </main>
@@ -69,7 +72,10 @@
   <aside id="chat-panel" hidden>
     <div class="chat-header">
       <div><strong>Agent IA SentinelPath</strong><br><span id="chat-context" class="hint"></span></div>
-      <button id="chat-close" aria-label="Fermer">×</button>
+      <div class="chat-actions">
+        <button id="chat-expand" type="button" title="Agrandir le panneau">Agrandir</button>
+        <button id="chat-close" type="button" aria-label="Fermer">×</button>
+      </div>
     </div>
     <div id="chat-log"></div>
     <div id="chat-suggestions"></div>
@@ -81,12 +87,13 @@
 
   <!-- app.js en premier : il definit les outils communs utilises par les autres fichiers -->
   <script src="vendor/cytoscape.min.js"></script>
-  <script src="app.js"></script>
-  <script src="dashboard.js"></script>
-  <script src="vulnerabilities.js"></script>
-  <script src="paths.js"></script>
-  <script src="graph.js"></script>
-  <script src="chat.js"></script>
+  <script src="app.js?v=5"></script>
+  <script src="markdown.js?v=5"></script>
+  <script src="dashboard.js?v=5"></script>
+  <script src="vulnerabilities.js?v=5"></script>
+  <script src="paths.js?v=5"></script>
+  <script src="graph.js?v=5"></script>
+  <script src="chat.js?v=5"></script>
   <script>refresh();</script>
 </body>
 </html>

@@ -43,6 +43,8 @@ h2 { margin-top: 0; font-size: 18px; color: #fff; }
          font-size: 12px; font-weight: 700; color: #050d1a; background: #607d8b; }
 .critical { --sev: #ff3b3b; } .high { --sev: #ff9800; } .medium { --sev: #ffd600; } .low { --sev: #00e676; }
 .badge.critical, .badge.high, .badge.medium, .badge.low, .fill { background: var(--sev); }
+/* CVE du catalogue CISA KEV (exploitees par de vrais attaquants) */
+.badge.kev { min-width: 0; margin-left: 6px; background: #b388ff; color: #050d1a; }
 
 .bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
 .bar { flex: 1; height: 12px; background: #10243d; border-radius: 6px; overflow: hidden; }
@@ -97,3 +99,52 @@ td.desc { color: var(--muted); max-width: 520px; }
 #chat-suggestions button { font-size: 12px; padding: 4px 10px; border-radius: 14px; box-shadow: none; }
 #chat-form { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
 #chat-input { flex: 1; }
+/* ---- Agent IA : rendu des reponses, sources, actions ---------------------------- */
+#chat-panel.expanded { width: min(920px, calc(100vw - 48px)); height: calc(100vh - 130px); }
+.chat-actions { display: flex; gap: 6px; align-items: center; }
+#chat-expand { padding: 3px 10px; font-size: 12px; box-shadow: none; }
+.message.agent { max-width: 92%; white-space: normal; }
+#chat-panel.expanded .message.agent { max-width: 96%; }
+.message.thinking { color: var(--muted); font-style: italic; }
+.message.thinking::after, .thinking::after { content: ""; display: inline-block; width: 1.2em; text-align: left;
+  animation: dots 1.2s steps(4, end) infinite; }
+@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+
+.md p { margin: 0 0 8px; } .md p:last-child { margin-bottom: 0; }
+.md h3, .md h4, .md h5, .md h6 { margin: 10px 0 6px; font-size: 14px; color: #fff; }
+.md ul, .md ol { margin: 4px 0 8px; padding-left: 20px; } .md li { margin: 2px 0; }
+.md code { background: #061224; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 12.5px; }
+.md blockquote { margin: 6px 0; padding: 4px 10px; border-left: 3px solid var(--neon); color: var(--muted); }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
+.md-table { overflow-x: auto; margin: 6px 0 8px; }
+.md table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 7px; text-align: left; vertical-align: top; }
+.md th { background: #0b2545; color: #fff; }
+a.node-link, a.path-link { color: #80deea; text-decoration: none; border-bottom: 1px dashed #80deea; }
+a.path-link { font-family: Consolas, monospace; }
+a.node-link:hover, a.path-link:hover { background: rgba(128, 222, 234, 0.12); }
+
+.sources { margin-top: 8px; font-size: 12px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 6px; }
+.sources > summary { cursor: pointer; color: #9fd8ff; }
+.sources.none { font-style: italic; }
+.source-item { margin: 4px 0 0 12px; }
+.source-item > summary { cursor: pointer; font-family: Consolas, monospace; color: var(--text); }
+.source-item.failed > summary { color: #ff8a80; }
+.source-item pre { max-height: 240px; overflow: auto; margin: 4px 0; padding: 8px; background: #061224;
+  border: 1px solid var(--line); border-radius: 6px; font-size: 11.5px; white-space: pre-wrap; word-break: break-word; }
+
+/* Boutons "Demander a l'agent" dans les vues */
+.ask-btn { margin-top: 6px; padding: 4px 10px; font-size: 12px; border-color: #b388ff; color: #d1b3ff;
+  box-shadow: 0 0 6px rgba(179, 136, 255, 0.35); }
+.ask-btn:hover { background: rgba(179, 136, 255, 0.12); }
+.ask-btn.small { margin: 4px 0 0; padding: 1px 7px; font-size: 11px; display: block; }
+#graph-ask { min-height: 8px; margin: 6px 0; }
+
+/* Resume de l'analyse par l'agent */
+.agent-summary { margin: 16px 0; padding: 14px 16px; border: 1px solid #b388ff; border-radius: 12px;
+  background: linear-gradient(135deg, rgba(179, 136, 255, 0.08), rgba(41, 182, 246, 0.05));
+  box-shadow: 0 0 16px rgba(179, 136, 255, 0.18); }
+.agent-summary-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.agent-summary-head button { margin-left: auto; border-color: #b388ff; color: #d1b3ff; }
+.agent-badge { background: #b388ff; color: #050d1a; font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+#summary-body.error { color: #ff8a80; }

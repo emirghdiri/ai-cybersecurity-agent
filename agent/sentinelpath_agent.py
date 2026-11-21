@@ -23,6 +23,7 @@ import argparse
 import inspect
 import json
 import os
+import re
 import sys
 from collections import Counter
 
@@ -33,6 +34,7 @@ API_URL = os.environ.get("SENTINELPATH_API_URL", "http://127.0.0.1:8000").rstrip
 MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
 
 HTTP_TIMEOUT = 30           # secondes
+COLLECT_TIMEOUT = 900       # une collecte live (scan Nmap complet) peut prendre plusieurs minutes
 MAX_TOOL_ROUNDS = 6         # appels d'outils max par question (evite les boucles infinies)
 MAX_TOOL_CALL_RETRIES = 2   # nouveaux essais si Groq rejette un appel d'outil mal forme
 MAX_TOOL_OUTPUT = 12_000    # caracteres max renvoyes au modele par outil (limite de tokens)
@@ -62,6 +64,23 @@ def api_get(route, analysis_id=None):
     except requests.Timeout:
         raise BackendError(f"Le backend n'a pas repondu en {HTTP_TIMEOUT} s ({route}).")
 
+    if r.status_code != 200:
+        try:
+            detail = r.json().get("detail", r.text)
+        except ValueError:
+            detail = r.text
+        raise BackendError(f"{route} a repondu HTTP {r.status_code} : {detail}")
+    return r.json()
+
+
+def api_post(route, timeout=COLLECT_TIMEOUT):
+    """POST sans corps sur le backend (lancement d'une collecte/analyse)."""
+    try:
+        r = requests.post(f"{API_URL}{route}", timeout=timeout)
+    except requests.ConnectionError:
+        raise BackendError(f"Backend injoignable sur {API_URL}.")
+    except requests.Timeout:
+        raise BackendError(f"{route} n'a pas termine en {timeout} s.")
     if r.status_code != 200:
         try:
             detail = r.json().get("detail", r.text)
@@ -102,65 +121,123 @@ SERVICE_ALIASES = {
 }
 
 
+def norm(text):
+    """'Backup Server', 'backup-server' et 'backup_server' -> 'backupserver'."""
+    return re.sub(r"[\s_\-.]+", "", (text or "").lower())
+
+
 def service_matches(query, name, port, container=None):
     """
     Le service correspond-il a la recherche ?
       - un numero cherche le port exact ("80" ne doit pas trouver 8080) ;
-      - sinon : alias exact (apache -> httpd), ou nom/conteneur contenant le texte cherche.
+      - sinon : alias exact (apache -> httpd), ou nom/conteneur contenant le texte cherche
+        (sans tenir compte des espaces, tirets et underscores).
     """
     q = query.lower().strip()
-    name = (name or "").lower().strip()
     if q.isdigit():
         return str(port) == q
-    if name in SERVICE_ALIASES.get(q, []):
+    if norm(name) in {norm(a) for a in SERVICE_ALIASES.get(q, [])}:
         return True
-    return q in name or (container is not None and q in container.lower())
+    return norm(q) in norm(name) or (container is not None and norm(q) in norm(container))
 
 
-def containers_by_port(analysis_id=None):
-    """Port -> nom du conteneur, d'apres le graphe (pour chercher par ex. 'web-server')."""
+def load_graph_safe(analysis_id=None):
+    """Graphe de l'analyse, ou graphe vide si indisponible (le filtre reste utilisable)."""
     try:
-        graph = api_get("/graph", analysis_id)
+        return api_get("/graph", analysis_id)
     except BackendError:
-        return {}
+        return {"nodes": [], "edges": []}
+
+
+def containers_by_port(graph):
+    """Port -> nom du conteneur, d'apres le graphe (pour chercher par ex. 'web-server')."""
     return {n["port"]: n["id"] for n in graph.get("nodes", []) if n.get("port") is not None}
 
 
-def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
+def unscanned_node_message(query, graph):
+    """
+    Un actif peut exister dans le graphe sans figurer dans le rapport de vulnerabilites :
+    c'est le cas d'un conteneur INTERNE (aucun port publie), invisible pour le scan Nmap
+    externe. Son logiciel et sa version sont alors inconnus : ses vulnerabilites ne sont
+    pas "nulles" mais "non recherchables". Renvoie un message explicite, ou None.
+    """
+    facts = node_facts(graph)
+    matches = [n for n in facts if norm(query) and norm(query) in norm(n)]
+    if not matches:
+        return None
+    parts = []
+    for n in matches:
+        f = facts[n]
+        sources = sorted({a["from_node"] for a in f["reachable_internally_from"]})
+        where = ("actif INTERNE non expose a l'exterieur, joignable depuis "
+                 + ", ".join(sources)) if sources else "actif sans relation connue"
+        parts.append(
+            f"'{n}' EXISTE dans le graphe d'attaque ({where}), mais aucun service ni version "
+            f"n'a ete collecte pour lui (service : {f['service']}, version : {f['version']}). "
+            "Ses vulnerabilites ne peuvent donc PAS etre recherchees : elles sont INCONNUES, "
+            "ce qui ne veut PAS dire qu'il n'en a aucune."
+        )
+    return " ".join(parts)
+
+
+def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=None,
+                        exploited_only=False):
     """GET /vulnerabilities, resume : totaux par severite + CVE les plus graves par service."""
     data = api_get("/vulnerabilities", analysis_id)
 
     severity = severity.upper() if isinstance(severity, str) and severity.strip() else None
     service = service.lower().strip() if isinstance(service, str) and service.strip() else None
-    containers = containers_by_port(analysis_id)
+    graph = load_graph_safe(analysis_id)
+    containers = containers_by_port(graph)
+    # Par defaut : 3 CVE detaillees pour un service precis, 2 par service pour la vue
+    # d'ensemble (sinon le resultat depasse la limite de taille sur une grosse infra).
     try:
         limit = max(1, min(int(limit), 15))
     except (TypeError, ValueError):
-        limit = 3
+        limit = 3 if service else 2
 
     total = Counter()
-    services_out = []
+    total_exploited = 0
+    services_out, unidentified = [], []
     for host in data.get("hosts", []):
         for svc in host.get("services", []):
             vulns = svc.get("vulnerabilities", [])
             counts = Counter(v.get("severity") or "N/A" for v in vulns)
             total.update(counts)
+            exploited = sum(1 for v in vulns if v.get("kev"))
+            total_exploited += exploited
 
-            container = containers.get(svc.get("port"))
+            # Le rapport indique le conteneur ; l'index par port ne sert que pour les
+            # anciennes analyses (il confondrait deux conteneurs sur le meme port).
+            container = svc.get("container") or (
+                None if "container" in svc else containers.get(svc.get("port")))
             if service and not service_matches(service, svc.get("name"), svc.get("port"), container):
                 continue
 
-            selected = [v for v in vulns if not severity or v.get("severity") == severity]
-            selected.sort(key=lambda v: v.get("cvss") or 0, reverse=True)
+            if not service and not vulns and (svc.get("name") or "unknown") == "unknown":
+                # ports systeme sans nom ni version : une ligne, pas une fiche complete
+                unidentified.append(f"port {svc.get('port')}")
+                continue
+
+            selected = [v for v in vulns if (not severity or v.get("severity") == severity)
+                        and (not exploited_only or v.get("kev"))]
+            if exploited_only and not selected:
+                continue  # on ne liste que les services ayant au moins une CVE exploitee
+            selected.sort(key=lambda v: (v.get("cvss") or 0, bool(v.get("kev"))), reverse=True)
 
             services_out.append({
                 "host": host.get("hostname"),
                 "container": container or NOT_COLLECTED,
-                "port": svc.get("port"),
+                "listening_port": svc.get("port") if svc.get("port") is not None else NOT_COLLECTED,
+                "published_port": svc.get("port") if svc.get("exposed_externally")
+                                  else NO_PUBLISHED_PORT,
                 "service": svc.get("name"),
-                "version": svc.get("version"),
+                "version": svc.get("version") or NOT_COLLECTED,
+                "version_source": VERSION_SOURCES.get(svc.get("version_source"), NOT_COLLECTED),
+                "exposed_externally": svc.get("exposed_externally", NOT_COLLECTED),
                 "status": svc.get("status"),
                 "cve_count": len(vulns),
+                "exploited_in_wild_count": exploited,
                 "by_severity": {s: counts[s] for s in SEVERITIES if counts[s]},
                 "matching_cves": len(selected),
                 "top_cves": [
@@ -168,8 +245,11 @@ def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
                         "id": v.get("id"),
                         "cvss": v.get("cvss"),
                         "severity": v.get("severity"),
-                        "description": (v.get("description") or "")[:220],
-                        "patch_refs": (v.get("patch_refs") or [])[:2],
+                        "exploited_in_wild": bool(v.get("kev")),
+                        "description": (v.get("description") or "")[:220 if service else 140],
+                        # liens de correctif seulement pour un service precis (taille limitee)
+                        "patch_refs": (v.get("patch_refs") or [])[:2] if service
+                                      else "demander un service precis pour les liens",
                     }
                     for v in selected[:limit]
                 ],
@@ -177,20 +257,41 @@ def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
 
     result = {}
     if service and not services_out:
-        # Distinguer "service absent de l'infrastructure" de "service present sans CVE".
-        present = sorted({f"{s.get('name')} (port {s.get('port')})"
-                          for h in data.get("hosts", []) for s in h.get("services", [])})
-        result["message"] = (
-            f"Aucun service ne correspond a '{service}' dans cette analyse : ce service "
-            f"n'a pas ete detecte (ce n'est PAS un service present sans CVE). "
-            f"Services presents : {', '.join(present)}."
-        )
+        # Trois cas a ne pas confondre : actif interne non scanne (present dans le graphe),
+        # service absent de l'infrastructure, ou service present sans CVE.
+        internal = unscanned_node_message(service, graph)
+        if internal:
+            result["message"] = internal
+        else:
+            present = sorted({f"{s.get('name')} (port {s.get('port')})"
+                              for h in data.get("hosts", []) for s in h.get("services", [])})
+            result["message"] = (
+                f"Aucun service ni actif ne correspond a '{service}' dans cette analyse "
+                f"(ni dans les services scannes, ni dans le graphe d'attaque) : il n'a pas "
+                f"ete detecte (ce n'est PAS un service present sans CVE). "
+                f"Services presents : {', '.join(present)}."
+            )
     return result | {
         "scan_date": data.get("scan_date"),
         "total_cves": sum(total.values()),
         "total_by_severity": {s: total[s] for s in SEVERITIES if total[s]},
-        "filters": {"severity": severity, "service": service, "top_cves_per_service": limit},
+        "total_exploited_in_wild": total_exploited,
+        # Comptages faits ici (le modele ne doit pas recompter lui-meme)
+        "service_counts": {
+            "listed_below": len(services_out),
+            "exposed_externally": sum(1 for s in services_out if s["exposed_externally"] is True),
+            "internal_not_exposed": sum(1 for s in services_out if s["exposed_externally"] is False),
+            "unidentified_ports": len(unidentified),
+        },
+        "note": "CVE deduites de la version du logiciel (base NVD) : leur exploitabilite "
+                "reelle sur cette machine n'a pas ete testee. exploited_in_wild = present "
+                "dans le catalogue CISA KEV (exploitee par de vrais attaquants).",
+        "filters": {"severity": severity, "service": service, "top_cves_per_service": limit,
+                    "exploited_only": bool(exploited_only)},
         "services": services_out,
+        "unidentified_services": (
+            f"{len(unidentified)} port(s) en ecoute sans service ni version identifies "
+            f"(donc sans CVE recherchable) : {', '.join(unidentified)}" if unidentified else None),
     }
 
 
@@ -199,6 +300,11 @@ def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
 # (ex. "port 5432 PostgreSQL"), alors qu'un texte "non disponible" est recopie tel quel.
 NOT_COLLECTED = "NON DISPONIBLE (aucune donnee collectee)"
 NO_PUBLISHED_PORT = "AUCUN PORT PUBLIE (non expose a l'exterieur)"
+VERSION_SOURCES = {
+    "docker-image": "deduite de l'etiquette de l'image Docker du conteneur",
+    "nmap": "detectee par le scan Nmap",
+    "local": "relevee sur la machine",
+}
 
 
 def node_facts(graph):
@@ -271,12 +377,101 @@ def get_risk_analysis(analysis_id=None, limit=10):
     return {"total_paths": len(data), "paths_by_risk": data[:limit]}
 
 
+def _analysis_snapshot(analysis_id):
+    """Faits comparables d'une analyse : services, noeuds, chemins et leur risque."""
+    vulns = api_get("/vulnerabilities", analysis_id)
+    graph = api_get("/graph", analysis_id)
+    try:
+        risks = api_get("/risk-analysis", analysis_id)
+    except BackendError:
+        risks = []
+    # Meme identifiant que les noeuds du graphe (conteneur, sinon nom du service).
+    # Les anciennes analyses n'ont pas le champ "container" : on le retrouve par le port.
+    port_to_node = {n["port"]: n["id"] for n in graph.get("nodes", []) if n.get("port") is not None}
+    services = {}
+    for h in vulns.get("hosts", []):
+        for s in h.get("services", []):
+            if (s.get("name") or "unknown") == "unknown":
+                continue  # ports systeme sans nom : bruit, varient d'un scan a l'autre
+            if "container" in s:
+                key = s["container"] or s.get("name")
+            else:
+                key = port_to_node.get(s.get("port")) or s.get("name")
+            services[key] = {"service": s.get("name"), "version": s.get("version"),
+                             "port": s.get("port"),
+                             "cve_count": len(s.get("vulnerabilities", []))}
+    return {
+        "services": services,
+        "nodes": {n["id"] for n in graph.get("nodes", [])
+                  if n.get("role") != "attacker" and n["id"] != "unknown"},
+        "paths": {" -> ".join(r["path"]): r.get("risk_score") for r in risks},
+    }
+
+
+def compare_analyses(old_analysis_id, new_analysis_id):
+    """Differences factuelles entre deux analyses enregistrees (calculees ici, pas par le LLM)."""
+    summaries = {a["id"]: a for a in api_get("/analyses")}
+    for aid in (old_analysis_id, new_analysis_id):
+        if aid not in summaries:
+            raise BackendError(f"Aucune analyse avec l'id {aid} (voir list_analyses).")
+    old, new = _analysis_snapshot(old_analysis_id), _analysis_snapshot(new_analysis_id)
+    so, sn = summaries[old_analysis_id], summaries[new_analysis_id]
+
+    changed = {k: {"avant": old["services"][k], "apres": new["services"][k]}
+               for k in sorted(old["services"].keys() & new["services"].keys())
+               if old["services"][k]["version"] != new["services"][k]["version"]}
+    risk_changes = {p: {"avant": old["paths"][p], "apres": new["paths"][p]}
+                    for p in sorted(old["paths"].keys() & new["paths"].keys())
+                    if old["paths"][p] != new["paths"][p]}
+    return {
+        "old_analysis": {"id": old_analysis_id, "date": so["analysis_date"],
+                         "scan_date": so["scan_date"]},
+        "new_analysis": {"id": new_analysis_id, "date": sn["analysis_date"],
+                         "scan_date": sn["scan_date"]},
+        "counts": {k: {"avant": so[k], "apres": sn[k],
+                       "difference": round((sn[k] or 0) - (so[k] or 0), 1)}
+                   for k in ("cve_count", "critical_count", "paths_count", "max_risk_score")},
+        "services_added": {k: new["services"][k]
+                           for k in sorted(new["services"].keys() - old["services"].keys())},
+        "services_removed": {k: old["services"][k]
+                             for k in sorted(old["services"].keys() - new["services"].keys())},
+        "services_version_changed": changed,
+        "nodes_added": sorted(new["nodes"] - old["nodes"]),
+        "nodes_removed": sorted(old["nodes"] - new["nodes"]),
+        "attack_paths_added": {p: new["paths"][p]
+                               for p in sorted(new["paths"].keys() - old["paths"].keys())},
+        "attack_paths_removed": {p: old["paths"][p]
+                                 for p in sorted(old["paths"].keys() - new["paths"].keys())},
+        "risk_score_changes": risk_changes,
+    }
+
+
+def run_new_analysis():
+    """
+    POST /collect-and-analyze : nouvelle collecte live (scan Nmap depuis Kali + inventaire
+    Ubuntu) puis analyse complete, puis comparaison avec l'analyse precedente.
+    """
+    history = api_get("/analyses")
+    previous_id = history[0]["id"] if history else None
+    print("  [..] collecte live en cours (scan Nmap + inventaire)...")
+    result = api_post("/collect-and-analyze")
+    new_id = result["analysis_id"]
+    out = {"new_analysis_id": new_id, "collection": result}
+    if previous_id is not None:
+        out["changes_since_previous"] = compare_analyses(previous_id, new_id)
+    else:
+        out["changes_since_previous"] = "Premiere analyse : aucune comparaison possible."
+    return out
+
+
 AVAILABLE_FUNCTIONS = {
     "list_analyses": list_analyses,
     "get_vulnerabilities": get_vulnerabilities,
     "get_attack_graph": get_attack_graph,
     "get_attack_paths": get_attack_paths,
     "get_risk_analysis": get_risk_analysis,
+    "compare_analyses": compare_analyses,
+    "run_new_analysis": run_new_analysis,
 }
 
 # Tous les parametres optionnels acceptent null : gpt-oss envoie souvent
@@ -333,6 +528,12 @@ TOOLS = [
                     "limit": {
                         "type": ["integer", "null"],
                         "description": "Nombre de CVE detaillees par service (defaut 3, max 15).",
+                    },
+                    "exploited_only": {
+                        "type": ["boolean", "null"],
+                        "description": "true = ne lister que les CVE activement exploitees "
+                                       "(catalogue CISA KEV). Pour 'quelles failles sont "
+                                       "exploitees', 'quoi corriger en urgence'.",
                     },
                 },
                 "required": [],
@@ -402,6 +603,43 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_analyses",
+            "description": (
+                "Compare deux analyses enregistrees et renvoie les differences calculees : "
+                "services ajoutes/retires, versions changees, noeuds ajoutes/retires, chemins "
+                "d'attaque apparus/disparus, evolution des scores de risque et des nombres de CVE. "
+                "A utiliser pour : 'qu'est-ce qui a change depuis la derniere analyse', "
+                "'compare l'analyse 19 et 21'. Utiliser list_analyses pour trouver les id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "old_analysis_id": {"type": "integer",
+                                        "description": "Analyse la plus ancienne."},
+                    "new_analysis_id": {"type": "integer",
+                                        "description": "Analyse la plus recente."},
+                },
+                "required": ["old_analysis_id", "new_analysis_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_new_analysis",
+            "description": (
+                "Lance une NOUVELLE collecte reelle de l'infrastructure (scan Nmap depuis Kali + "
+                "inventaire sur Ubuntu, par SSH), l'analyse complete, puis renvoie les differences "
+                "avec l'analyse precedente. Prend de 20 secondes a quelques minutes. A utiliser "
+                "UNIQUEMENT si l'utilisateur demande explicitement un nouveau scan ou une nouvelle "
+                "analyse ('refais un scan', 'relance l'analyse', 'analyse a nouveau mon reseau')."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """Tu es l'agent IA de SentinelPath, un outil d'analyse de vulnerabilites et de chemins d'attaque.
@@ -411,10 +649,14 @@ Principe absolu : les outils calculent, toi tu expliques.
 - N'invente JAMAIS une CVE, un score CVSS, un score de risque, une version, un service ou un chemin d'attaque. Utilise uniquement les valeurs renvoyees par les outils, recopiees exactement.
 - Donnees manquantes : si un champ (port, service, version...) est absent, null, ou vaut "NON DISPONIBLE" / "AUCUN PORT PUBLIE" dans le resultat d'un outil, dis explicitement que cette information n'est pas disponible ou que le port n'est pas publie. Ne le remplace JAMAIS par une valeur plausible, meme pour completer un tableau proprement : ecris "non disponible" dans la case.
 - Ne deduis jamais un service ou une version a partir d'un numero de port ou du nom d'un noeud (un noeud nomme "database" n'est pas forcement PostgreSQL ou MySQL ; le port 6379 ne prouve pas Redis). Seuls les champs "service" et "version" font foi. N'ajoute donc jamais de nom de service entre parentheses apres un port : ecris "port 6379 (service non identifie)", pas "port 6379 (Redis)".
+- Ne confonds jamais "aucune vulnerabilite trouvee" (service scanne, version connue, 0 CVE) et "vulnerabilites inconnues" (actif present dans le graphe mais dont le service/version n'a pas pu etre collecte, typiquement un conteneur interne sans port publie). Dans le second cas, dis que l'actif existe, ou il se trouve, et que ses vulnerabilites n'ont pas pu etre evaluees.
 - Distingue le port publie vers l'exterieur ("published_port") des acces internes ("reachable_internally_from") : un actif non expose peut etre joignable en interne. Dans ce cas, "target_port" est le port de la CIBLE (pas celui de "from_node") ; reprends la phrase du champ "fact" telle quelle.
 - Si un outil renvoie une erreur ou si l'information n'existe pas dans les donnees, dis-le clairement et indique quoi faire (par exemple lancer le backend ou une analyse). N'essaie pas de deviner.
 - Pour les recommandations de securite, appuie-toi sur les faits renvoyes (CVE concernees, versions, chemins, liens de correctif) et propose des mesures concretes et reconnues (mise a jour vers une version corrigee, reduction de l'exposition, segmentation reseau, controle d'acces...). Precise que ce sont des recommandations generales a valider.
 - Cite les identifiants exacts (CVE, noms des services/conteneurs, scores) pour que l'utilisateur puisse verifier.
+- Les CVE sont deduites de la version du logiciel (base NVD) : ce sont des vulnerabilites potentielles, leur exploitabilite reelle sur la machine n'a pas ete testee ; dis-le quand tu presentes des CVE. Une CVE marquee exploited_in_wild figure dans le catalogue CISA KEV (exploitee par de vrais attaquants) : signale-la comme prioritaire.
+- Si la version d'un service est "deduite de l'etiquette de l'image Docker", precise-le : c'est l'etiquette de l'image, pas une version mesuree.
+- N'appelle run_new_analysis que si l'utilisateur demande explicitement un nouveau scan ou une nouvelle analyse ; pour une simple question, lis les resultats existants.
 
 Style : reponds en francais, de facon claire et structuree, concise (listes courtes plutot que longs paragraphes). Commence par la reponse directe a la question."""
 
@@ -438,28 +680,32 @@ def parse_tool_args(func, raw_arguments):
     return {k: v for k, v in args.items() if k in accepted and v not in (None, "")}
 
 
-def run_tool(name, raw_arguments):
-    """Execute un outil et renvoie son resultat sous forme de texte JSON pour le modele."""
+def run_tool(name, raw_arguments, trace=None):
+    """
+    Execute un outil et renvoie son resultat sous forme de texte JSON pour le modele.
+    Si `trace` est une liste, on y ajoute l'appel (outil, arguments, resultat exact
+    transmis au modele) : le frontend l'affiche comme "sources" de la reponse.
+    """
     func = AVAILABLE_FUNCTIONS.get(name)
     if func is None:
-        return json.dumps({"error": f"Outil inconnu : {name}"})
+        text, args, ok = json.dumps({"error": f"Outil inconnu : {name}"}), {}, False
+    else:
+        args = parse_tool_args(func, raw_arguments)
+        shown = ", ".join(f"{k}={v!r}" for k, v in args.items()) if DEBUG else ""
+        print(f"  [outil] {name}({shown})")
+        try:
+            text, ok = json.dumps(func(**args), ensure_ascii=False), True
+        except BackendError as e:
+            print(f"  [!] {e}")
+            text, ok = json.dumps({"error": str(e)}, ensure_ascii=False), False
 
-    args = parse_tool_args(func, raw_arguments)
-    shown = ", ".join(f"{k}={v!r}" for k, v in args.items()) if DEBUG else ""
-    print(f"  [outil] {name}({shown})")
-
-    try:
-        result = func(**args)
-    except BackendError as e:
-        print(f"  [!] {e}")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-    text = json.dumps(result, ensure_ascii=False)
     if len(text) > MAX_TOOL_OUTPUT:
         text = text[:MAX_TOOL_OUTPUT] + (
             ' ... [TRONQUE : resultat trop long. Utilise des filtres (service, severity, limit) '
             'pour obtenir le reste. Ne suppose rien sur la partie manquante.]'
         )
+    if trace is not None:
+        trace.append({"tool": name, "args": args, "ok": ok, "result": text})
     return text
 
 
@@ -476,6 +722,18 @@ def assistant_message_to_dict(msg):
             for c in msg.tool_calls
         ]
     return out
+
+
+def shrink_tool_results(messages, keep=2500):
+    """Raccourcit les resultats d'outils deja envoyes ; renvoie True si quelque chose a change."""
+    changed = False
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "tool" and len(m["content"]) > keep:
+            m["content"] = (m["content"][:keep] + ' ... [TRONQUE pour respecter la limite de '
+                            'taille : ne suppose rien sur la partie manquante, utilise des '
+                            'filtres plus precis si necessaire.]')
+            changed = True
+    return changed
 
 
 def create_completion(client, messages, retries=MAX_TOOL_CALL_RETRIES):
@@ -497,6 +755,10 @@ def create_completion(client, messages, retries=MAX_TOOL_CALL_RETRIES):
             if "tool_use_failed" not in str(e) or attempt == retries:
                 raise
             print("  [!] Appel d'outil mal forme par le modele, nouvel essai...")
+        except APIStatusError as e:
+            if e.status_code != 413 or attempt == retries or not shrink_tool_results(messages):
+                raise
+            print("  [!] Requete trop volumineuse pour Groq : resultats d'outils raccourcis...")
 
 
 def normalize_answer(text):
@@ -510,8 +772,11 @@ def normalize_answer(text):
     return text.translate({0x2010: "-", 0x2011: "-", 0x2013: "-"})
 
 
-def ask(client, history, question):
-    """Traite une question : le modele appelle les outils necessaires puis repond."""
+def ask(client, history, question, trace=None):
+    """
+    Traite une question : le modele appelle les outils necessaires puis repond.
+    `trace` (liste optionnelle) recoit chaque appel d'outil, pour la tracabilite.
+    """
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history,
                 {"role": "user", "content": question}]
 
@@ -526,7 +791,7 @@ def ask(client, history, question):
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
-                "content": run_tool(call.function.name, call.function.arguments),
+                "content": run_tool(call.function.name, call.function.arguments, trace),
             })
 
     return ("Je n'ai pas pu terminer : trop d'appels d'outils pour cette question. "

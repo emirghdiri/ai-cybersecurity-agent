@@ -47,7 +47,8 @@ function cveRows(vulnReport) {
   for (const host of vulnReport.hosts || []) {
     for (const svc of host.services || []) {
       for (const cve of svc.vulnerabilities || []) {
-        rows.push({ service: svc.name, port: svc.port, version: svc.version, ...cve });
+        rows.push({ service: svc.name, port: svc.port, version: svc.version,
+                    container: svc.container, exposed: svc.exposed_externally, ...cve });
       }
     }
   }
@@ -92,14 +93,31 @@ document.getElementById("analysis-select").addEventListener("change", event => {
   refresh();
 });
 
+// Lance une NOUVELLE collecte (scan Nmap depuis Kali + inventaire sur Ubuntu, par SSH)
+// puis l'analyse. Si la collecte live n'est pas configuree sur ce serveur (variables
+// SSH absentes), on reanalyse le dernier collector_output.json importe, en le signalant.
 document.getElementById("analyze-btn").addEventListener("click", async event => {
   const button = event.target;
   button.disabled = true;
-  setStatus("Analyse en cours (interrogation de NVD, jusqu'à une minute)…");
+  setStatus("Collecte en cours : scan Nmap depuis Kali puis inventaire sur Ubuntu, "
+            + "puis analyse (de 30 secondes à quelques minutes)…");
   try {
-    const result = await api("/analyze", { method: "POST" });
-    currentId = result.id;
+    let note = "";
+    try {
+      const result = await api("/collect-and-analyze", { method: "POST" });
+      currentId = result.analysis_id;
+      note = `Nouvelle analyse #${result.analysis_id} : ${result.services} services `
+           + `(dont ${result.exposed_services} exposés), ${result.relations} relations.`;
+    } catch (error) {
+      if (!error.message.startsWith("Collecte live non configurée")) throw error;
+      setStatus("Collecte live non configurée : réanalyse du dernier fichier importé…");
+      const result = await api("/analyze", { method: "POST" });
+      currentId = result.id;
+      note = `Analyse #${result.id} faite sur le dernier fichier importé `
+           + "(pas de nouveau scan : collecte live non configurée sur ce serveur).";
+    }
     await refresh();
+    if (document.getElementById("status").className !== "error") setStatus(note);
   } catch (error) {
     setStatus(error.message, true);
   } finally {
