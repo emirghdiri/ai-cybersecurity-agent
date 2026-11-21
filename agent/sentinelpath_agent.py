@@ -23,6 +23,7 @@ import argparse
 import inspect
 import json
 import os
+import re
 import sys
 from collections import Counter
 
@@ -102,28 +103,63 @@ SERVICE_ALIASES = {
 }
 
 
+def norm(text):
+    """'Backup Server', 'backup-server' et 'backup_server' -> 'backupserver'."""
+    return re.sub(r"[\s_\-.]+", "", (text or "").lower())
+
+
 def service_matches(query, name, port, container=None):
     """
     Le service correspond-il a la recherche ?
       - un numero cherche le port exact ("80" ne doit pas trouver 8080) ;
-      - sinon : alias exact (apache -> httpd), ou nom/conteneur contenant le texte cherche.
+      - sinon : alias exact (apache -> httpd), ou nom/conteneur contenant le texte cherche
+        (sans tenir compte des espaces, tirets et underscores).
     """
     q = query.lower().strip()
-    name = (name or "").lower().strip()
     if q.isdigit():
         return str(port) == q
-    if name in SERVICE_ALIASES.get(q, []):
+    if norm(name) in {norm(a) for a in SERVICE_ALIASES.get(q, [])}:
         return True
-    return q in name or (container is not None and q in container.lower())
+    return norm(q) in norm(name) or (container is not None and norm(q) in norm(container))
 
 
-def containers_by_port(analysis_id=None):
-    """Port -> nom du conteneur, d'apres le graphe (pour chercher par ex. 'web-server')."""
+def load_graph_safe(analysis_id=None):
+    """Graphe de l'analyse, ou graphe vide si indisponible (le filtre reste utilisable)."""
     try:
-        graph = api_get("/graph", analysis_id)
+        return api_get("/graph", analysis_id)
     except BackendError:
-        return {}
+        return {"nodes": [], "edges": []}
+
+
+def containers_by_port(graph):
+    """Port -> nom du conteneur, d'apres le graphe (pour chercher par ex. 'web-server')."""
     return {n["port"]: n["id"] for n in graph.get("nodes", []) if n.get("port") is not None}
+
+
+def unscanned_node_message(query, graph):
+    """
+    Un actif peut exister dans le graphe sans figurer dans le rapport de vulnerabilites :
+    c'est le cas d'un conteneur INTERNE (aucun port publie), invisible pour le scan Nmap
+    externe. Son logiciel et sa version sont alors inconnus : ses vulnerabilites ne sont
+    pas "nulles" mais "non recherchables". Renvoie un message explicite, ou None.
+    """
+    facts = node_facts(graph)
+    matches = [n for n in facts if norm(query) and norm(query) in norm(n)]
+    if not matches:
+        return None
+    parts = []
+    for n in matches:
+        f = facts[n]
+        sources = sorted({a["from_node"] for a in f["reachable_internally_from"]})
+        where = ("actif INTERNE non expose a l'exterieur, joignable depuis "
+                 + ", ".join(sources)) if sources else "actif sans relation connue"
+        parts.append(
+            f"'{n}' EXISTE dans le graphe d'attaque ({where}), mais aucun service ni version "
+            f"n'a ete collecte pour lui (service : {f['service']}, version : {f['version']}). "
+            "Ses vulnerabilites ne peuvent donc PAS etre recherchees : elles sont INCONNUES, "
+            "ce qui ne veut PAS dire qu'il n'en a aucune."
+        )
+    return " ".join(parts)
 
 
 def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
@@ -132,7 +168,8 @@ def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
 
     severity = severity.upper() if isinstance(severity, str) and severity.strip() else None
     service = service.lower().strip() if isinstance(service, str) and service.strip() else None
-    containers = containers_by_port(analysis_id)
+    graph = load_graph_safe(analysis_id)
+    containers = containers_by_port(graph)
     try:
         limit = max(1, min(int(limit), 15))
     except (TypeError, ValueError):
@@ -177,14 +214,20 @@ def get_vulnerabilities(analysis_id=None, severity=None, service=None, limit=3):
 
     result = {}
     if service and not services_out:
-        # Distinguer "service absent de l'infrastructure" de "service present sans CVE".
-        present = sorted({f"{s.get('name')} (port {s.get('port')})"
-                          for h in data.get("hosts", []) for s in h.get("services", [])})
-        result["message"] = (
-            f"Aucun service ne correspond a '{service}' dans cette analyse : ce service "
-            f"n'a pas ete detecte (ce n'est PAS un service present sans CVE). "
-            f"Services presents : {', '.join(present)}."
-        )
+        # Trois cas a ne pas confondre : actif interne non scanne (present dans le graphe),
+        # service absent de l'infrastructure, ou service present sans CVE.
+        internal = unscanned_node_message(service, graph)
+        if internal:
+            result["message"] = internal
+        else:
+            present = sorted({f"{s.get('name')} (port {s.get('port')})"
+                              for h in data.get("hosts", []) for s in h.get("services", [])})
+            result["message"] = (
+                f"Aucun service ni actif ne correspond a '{service}' dans cette analyse "
+                f"(ni dans les services scannes, ni dans le graphe d'attaque) : il n'a pas "
+                f"ete detecte (ce n'est PAS un service present sans CVE). "
+                f"Services presents : {', '.join(present)}."
+            )
     return result | {
         "scan_date": data.get("scan_date"),
         "total_cves": sum(total.values()),
@@ -411,6 +454,7 @@ Principe absolu : les outils calculent, toi tu expliques.
 - N'invente JAMAIS une CVE, un score CVSS, un score de risque, une version, un service ou un chemin d'attaque. Utilise uniquement les valeurs renvoyees par les outils, recopiees exactement.
 - Donnees manquantes : si un champ (port, service, version...) est absent, null, ou vaut "NON DISPONIBLE" / "AUCUN PORT PUBLIE" dans le resultat d'un outil, dis explicitement que cette information n'est pas disponible ou que le port n'est pas publie. Ne le remplace JAMAIS par une valeur plausible, meme pour completer un tableau proprement : ecris "non disponible" dans la case.
 - Ne deduis jamais un service ou une version a partir d'un numero de port ou du nom d'un noeud (un noeud nomme "database" n'est pas forcement PostgreSQL ou MySQL ; le port 6379 ne prouve pas Redis). Seuls les champs "service" et "version" font foi. N'ajoute donc jamais de nom de service entre parentheses apres un port : ecris "port 6379 (service non identifie)", pas "port 6379 (Redis)".
+- Ne confonds jamais "aucune vulnerabilite trouvee" (service scanne, version connue, 0 CVE) et "vulnerabilites inconnues" (actif present dans le graphe mais dont le service/version n'a pas pu etre collecte, typiquement un conteneur interne sans port publie). Dans le second cas, dis que l'actif existe, ou il se trouve, et que ses vulnerabilites n'ont pas pu etre evaluees.
 - Distingue le port publie vers l'exterieur ("published_port") des acces internes ("reachable_internally_from") : un actif non expose peut etre joignable en interne. Dans ce cas, "target_port" est le port de la CIBLE (pas celui de "from_node") ; reprends la phrase du champ "fact" telle quelle.
 - Si un outil renvoie une erreur ou si l'information n'existe pas dans les donnees, dis-le clairement et indique quoi faire (par exemple lancer le backend ou une analyse). N'essaie pas de deviner.
 - Pour les recommandations de securite, appuie-toi sur les faits renvoyes (CVE concernees, versions, chemins, liens de correctif) et propose des mesures concretes et reconnues (mise a jour vers une version corrigee, reduction de l'exposition, segmentation reseau, controle d'acces...). Precise que ce sont des recommandations generales a valider.
