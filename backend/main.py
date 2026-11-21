@@ -8,6 +8,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.database import get_analysis, init_db, list_analyses, save_analysis
+from backend.live_collector import (
+    CollectorConfigError,
+    LiveCollectorError,
+    load_config,
+    run_live_collection,
+)
 from backend.pipeline import COLLECTOR_FILE, run_pipeline
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -85,6 +91,55 @@ def analyze():
         )
     result["id"] = save_analysis(result)
     return result
+
+
+@app.post("/collect-and-analyze")
+def collect_and_analyze():
+    """
+    Collecte live par SSH (scan Nmap depuis Kali + inventaire et fusion sur Ubuntu),
+    enregistre collector_output.json comme POST /import, puis lance l'analyse complète.
+    Peut prendre plusieurs minutes (scan de tous les ports avec détection de versions).
+    """
+    try:
+        config = load_config()
+    except CollectorConfigError as e:
+        raise HTTPException(status_code=503, detail=f"Collecte live non configurée : {e}")
+
+    try:
+        data, steps = run_live_collection(config)
+    except LiveCollectorError as e:
+        raise HTTPException(
+            status_code=504 if e.timeout else 502,
+            detail=f"Échec de la collecte à l'étape « {e.step} » : {e.message}",
+        )
+
+    errors = validate_collector(data)
+    if errors:
+        raise HTTPException(
+            status_code=502,
+            detail="La collecte a produit un collector_output.json invalide : " + "; ".join(errors),
+        )
+
+    COLLECTOR_FILE.parent.mkdir(exist_ok=True)
+    with open(COLLECTOR_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    try:
+        result = run_pipeline(COLLECTOR_FILE)
+    except (KeyError, IndexError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=422, detail=f"Analyse impossible : format inattendu ({e!r}).")
+    analysis_id = save_analysis(result)
+
+    return {
+        "analysis_id": analysis_id,
+        "scan_date": data.get("scan_date"),
+        "services": sum(len(h["services"]) for h in data["hosts"]),
+        "exposed_services": sum(
+            1 for h in data["hosts"] for s in h["services"] if s.get("exposed_externally")
+        ),
+        "relations": len(data["relations"]),
+        "steps": steps,
+    }
 
 @app.post("/import")
 async def import_collector(file: UploadFile = File(...)):
