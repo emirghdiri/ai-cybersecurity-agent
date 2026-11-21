@@ -17,7 +17,18 @@ registerView(({ risks }) => {
       </div>
       <div class="path-nodes">${r.path.map(n => `<span class="node">${esc(n)}</span>`).join(" → ")}</div>
       <p>${esc(r.description)}</p>
+      <button type="button" class="ask-btn" data-ask="${i}">Expliquer ce chemin avec l'agent</button>
     </div>`).join("");
+
+  list.querySelectorAll(".ask-btn").forEach(button => {
+    button.addEventListener("click", event => {
+      event.stopPropagation();  // ne pas declencher la mise en evidence de la carte
+      const r = risks[Number(button.dataset.ask)];
+      askAgent(`Explique-moi le chemin d'attaque ${r.path.join(" → ")} (score de risque `
+             + `${r.risk_score}) : comment l'attaquant progresse étape par étape, quelles failles `
+             + `il exploite, et comment bloquer ce chemin en priorité.`);
+    });
+  });
 
   list.querySelectorAll(".path-card").forEach(card => {
     card.addEventListener("click", () => {

@@ -680,28 +680,32 @@ def parse_tool_args(func, raw_arguments):
     return {k: v for k, v in args.items() if k in accepted and v not in (None, "")}
 
 
-def run_tool(name, raw_arguments):
-    """Execute un outil et renvoie son resultat sous forme de texte JSON pour le modele."""
+def run_tool(name, raw_arguments, trace=None):
+    """
+    Execute un outil et renvoie son resultat sous forme de texte JSON pour le modele.
+    Si `trace` est une liste, on y ajoute l'appel (outil, arguments, resultat exact
+    transmis au modele) : le frontend l'affiche comme "sources" de la reponse.
+    """
     func = AVAILABLE_FUNCTIONS.get(name)
     if func is None:
-        return json.dumps({"error": f"Outil inconnu : {name}"})
+        text, args, ok = json.dumps({"error": f"Outil inconnu : {name}"}), {}, False
+    else:
+        args = parse_tool_args(func, raw_arguments)
+        shown = ", ".join(f"{k}={v!r}" for k, v in args.items()) if DEBUG else ""
+        print(f"  [outil] {name}({shown})")
+        try:
+            text, ok = json.dumps(func(**args), ensure_ascii=False), True
+        except BackendError as e:
+            print(f"  [!] {e}")
+            text, ok = json.dumps({"error": str(e)}, ensure_ascii=False), False
 
-    args = parse_tool_args(func, raw_arguments)
-    shown = ", ".join(f"{k}={v!r}" for k, v in args.items()) if DEBUG else ""
-    print(f"  [outil] {name}({shown})")
-
-    try:
-        result = func(**args)
-    except BackendError as e:
-        print(f"  [!] {e}")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-    text = json.dumps(result, ensure_ascii=False)
     if len(text) > MAX_TOOL_OUTPUT:
         text = text[:MAX_TOOL_OUTPUT] + (
             ' ... [TRONQUE : resultat trop long. Utilise des filtres (service, severity, limit) '
             'pour obtenir le reste. Ne suppose rien sur la partie manquante.]'
         )
+    if trace is not None:
+        trace.append({"tool": name, "args": args, "ok": ok, "result": text})
     return text
 
 
@@ -768,8 +772,11 @@ def normalize_answer(text):
     return text.translate({0x2010: "-", 0x2011: "-", 0x2013: "-"})
 
 
-def ask(client, history, question):
-    """Traite une question : le modele appelle les outils necessaires puis repond."""
+def ask(client, history, question, trace=None):
+    """
+    Traite une question : le modele appelle les outils necessaires puis repond.
+    `trace` (liste optionnelle) recoit chaque appel d'outil, pour la tracabilite.
+    """
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history,
                 {"role": "user", "content": question}]
 
@@ -784,7 +791,7 @@ def ask(client, history, question):
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
-                "content": run_tool(call.function.name, call.function.arguments),
+                "content": run_tool(call.function.name, call.function.arguments, trace),
             })
 
     return ("Je n'ai pas pu terminer : trop d'appels d'outils pour cette question. "

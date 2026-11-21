@@ -120,3 +120,12 @@ def test_tool_schemas_are_consistent():
     names = {t["function"]["name"] for t in agent.TOOLS}
     assert names == set(agent.AVAILABLE_FUNCTIONS)
     json.dumps(agent.TOOLS)  # serialisable pour l'API Groq
+
+
+def test_run_tool_records_trace(backend):
+    trace = []
+    text = agent.run_tool("get_vulnerabilities", '{"service": "apache", "": ""}', trace)
+    assert trace == [{"tool": "get_vulnerabilities", "args": {"service": "apache"},
+                      "ok": True, "result": text}]
+    agent.run_tool("outil_inconnu", "{}", trace)
+    assert trace[-1]["ok"] is False and trace[-1]["tool"] == "outil_inconnu"
