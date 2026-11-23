@@ -22,19 +22,24 @@ Principe directeur : **les outils calculent, l'agent IA explique.** Aucune CVE n
 
 ## Architecture
 
-![SentinelPath Architecture](docs/architecture.png)
+![SentinelPath Architecture](docs/architecture.jpg)
 
-Le système est organisé en quatre couches :
+La plateforme est organisée en six blocs :
 
-1. **Infrastructure / VM** : un laboratoire contrôlé composé d'une machine attaquante et d'une machine cible dont les services tournent en conteneurs Docker, répartis entre un réseau public exposé et un réseau interne isolé.
-2. **Data Collector** : des scripts Python qui relèvent les informations système, les ports et services avec leurs versions (psutil, Docker, Nmap) et la topologie réseau, puis produisent un fichier JSON structuré.
-3. **AI Cyber Agent** : l'orchestrateur, qui comprend la demande, appelle cinq modules spécialisés (Vulnerability Analyzer, Attack Graph Builder, Attack Path Finder, Risk Analyzer, LLM) et corrèle leurs résultats.
-4. **Interface utilisateur** : une application web qui présente la vue d'ensemble, le graphe d'attaque interactif, les chemins classés par risque, les recommandations, et un chat avec l'agent.
+1. **Laboratoire** : une machine attaquante **Kali Linux** et une machine cible **Ubuntu Server**, dont les services tournent en conteneurs Docker répartis entre un réseau public (`public_net`, exposé) et un réseau interne isolé (`internal_net`).
+2. **Data Collector** (`backend/live_collector.py`, paramiko) : l'orchestrateur Python de la collecte. Par SSH, il lance `nmap -sV -p-` sur Kali (vue externe, celle d'un attaquant) et récupère `nmap_scan.xml` ; puis il exécute l'inventaire local sur Ubuntu (conteneurs, réseaux Docker) et récupère le résultat par SFTP. Les deux vues sont fusionnées en `collector_output.json`.
+3. **Moteur d'analyse, 100 % déterministe** (aucun LLM dans les calculs) : Vulnerability Analyzer (API NVD + cache SQLite, CISA KEV), Attack Graph Builder (NetworkX DiGraph), Attack Path Finder (NetworkX `all_simple_paths`) et Risk Analyzer (CVSS max × poids d'impact).
+4. **Backend REST** (FastAPI + SQLite) : la passerelle unique vers les résultats et l'historique des analyses (`/import`, `/analyze`, `/collect-and-analyze`, `/analyses`, `/vulnerabilities`, `/graph`, `/attack-paths`, `/risk-analysis`, `/health`).
+5. **Agent IA** (Groq, `openai/gpt-oss-20b`) : par tool calling, il interroge les résultats **exclusivement via l'API REST** (outils de lecture seule) et dispose d'une seule action, `launch_analysis`, qui déclenche une collecte live après confirmation explicite de l'utilisateur. Il ne calcule ni CVE, ni graphe, ni chemin, ni score.
+6. **Interface web** (HTML / CSS / JavaScript) : tableau de bord, graphe d'attaque interactif (Cytoscape.js) et chat avec l'agent.
 
 **Flux de données**
 
 ```
-Infrastructure ──► collector_output.json ──► modules d'analyse ──► analysis_result.json ──► Backend (FastAPI) ──► Frontend
+Kali (nmap) + Ubuntu (inventaire) ──SSH/SFTP──► Data Collector ──► collector_output.json
+    ──► Moteur d'analyse ──► Backend REST (SQLite) ◄──► Agent IA
+                                    ▲
+                                    └──► Interface web
 ```
 
 Chaque étape communique par un fichier JSON au format documenté : chaque module peut être testé et rejoué indépendamment.
