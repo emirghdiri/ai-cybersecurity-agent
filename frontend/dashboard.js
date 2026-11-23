@@ -33,13 +33,25 @@ function renderDashboard({ vulns, risks, summary }) {
 registerView(renderDashboard);
 
 // Resume redige par l'agent IA, a la demande (pour ne pas consommer le quota Groq),
-// garde en memoire par analyse pour ne pas le regenerer a chaque rafraichissement.
+// garde par analyse dans le navigateur (localStorage) : il reste affiche apres un
+// rechargement de la page, sans reconsommer le quota Groq.
 const SUMMARY_QUESTION =
   "Fais un résumé exécutif de cette analyse pour un responsable sécurité, en 5 points courts "
   + "maximum : situation générale (services exposés, nombre de CVE), chemin d'attaque le plus "
   + "dangereux, failles activement exploitées à corriger en priorité, et la première action "
   + "recommandée. Pas de tableau.";
-const summaries = new Map();
+const SUMMARY_STORE = "sentinelpath-summaries";
+const summaries = {
+  all() {
+    try { return JSON.parse(localStorage.getItem(SUMMARY_STORE)) || {}; } catch { return {}; }
+  },
+  get(id) { return this.all()[id]; },
+  set(id, reply) {
+    const all = this.all();
+    all[id] = reply;
+    try { localStorage.setItem(SUMMARY_STORE, JSON.stringify(all)); } catch { /* stockage indisponible */ }
+  },
+};
 
 function renderSummaryBox(analysisId) {
   const box = document.getElementById("agent-summary");

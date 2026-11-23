@@ -131,7 +131,17 @@ kali ALL=(root) NOPASSWD: /usr/bin/nmap -sV -T4 -p- -oX /home/kali/sentinelpath_
 
 Une règle `nmap *` donnerait en pratique un accès root (`--script`) : tous les arguments sont donc figés.
 
-**4. Lancer SentinelPath**
+**4. (Optionnel) Créer un compte de connexion**
+
+Sans mot de passe, SentinelPath s'ouvre directement depuis ce PC et le réseau Tailscale, et refuse toute requête venant d'internet. Un mot de passe n'est nécessaire que pour une publication sur internet (Funnel) :
+
+```bash
+python -m backend.auth      # demande le mot de passe et affiche les variables à définir
+```
+
+Le mot de passe n'est jamais stocké : seule son empreinte PBKDF2 l'est (`SENTINELPATH_PASSWORD_HASH`). `SENTINELPATH_AUTH=required` refuse tout accès tant qu'aucun mot de passe n'est défini.
+
+**5. Lancer SentinelPath**
 
 ```bash
 python -m uvicorn backend.main:app --reload
@@ -139,13 +149,40 @@ python -m uvicorn backend.main:app --reload
 
 Ouvrez http://127.0.0.1:8000, puis cliquez sur **Lancer une analyse** (collecte live puis analyse). Sans collecte live configurée, importez un `collector_output.json` via `POST /import` (voir http://127.0.0.1:8000/docs).
 
-**5. Lancer les tests**
+**6. Lancer les tests**
 
 ```bash
 pytest
 ```
 
 Les tests n'utilisent ni le réseau ni les VMs. Les résultats de scan réels (`local_inventory.json`, `nmap_scan.xml`, `collector_output.json`, base `backend/data/`…) sont exclus du dépôt par le `.gitignore`.
+
+---
+
+## Mise en ligne en HTTPS
+
+**Option recommandée : HTTPS privé, sans mot de passe (Tailscale Serve).** Vrai certificat, adresse `https://<machine>.<tailnet>.ts.net`, accessible uniquement aux membres du réseau Tailscale (l'équipe, le jury invité) :
+
+```bash
+# une fois, par l'administrateur du réseau Tailscale : activer "HTTPS Certificates"
+# sur https://login.tailscale.com/admin/dns
+python -m uvicorn backend.main:app      # sans mot de passe configuré
+tailscale serve --bg 8000
+```
+
+Sans mot de passe, le serveur n'accepte que ce PC et les membres du réseau Tailscale (identité ajoutée par Tailscale) ; toute requête relayée depuis internet est refusée (403).
+
+**Option publique (Tailscale Funnel), avec mot de passe obligatoire :**
+
+SentinelPath peut être publié avec un vrai certificat HTTPS et une adresse fixe gratuite grâce à **Tailscale Funnel**, sans ouvrir de port sur la box :
+
+```bash
+tailscale funnel --bg 8000          # https://<machine>.<tailnet>.ts.net -> 127.0.0.1:8000
+tailscale funnel status             # adresse publique
+tailscale funnel --https=443 off    # arrêter la publication
+```
+
+Le serveur reste lié à `127.0.0.1` ; seul Funnel le rend accessible. **La connexion est alors indispensable** : sans elle, n'importe qui pourrait lancer des scans sur le labo et utiliser le quota Groq. Protections en place : mot de passe haché (PBKDF2, 600 000 itérations), cookie de session signé (`HttpOnly`, `Secure`, `SameSite=Lax`, 8 h), blocage après 5 échecs, toutes les routes protégées (y compris `/docs` et le chat), en-têtes `X-Frame-Options` et `nosniff`.
 
 ---
 

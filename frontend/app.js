@@ -23,6 +23,10 @@ function severityClass(severity) {
 
 async function api(path, options) {
   const response = await fetch(path, options);
+  if (response.status === 401) {  // session absente ou expiree : retour a la connexion
+    window.location.href = `/login?next=${encodeURIComponent(location.pathname)}`;
+    throw new Error("Session expirée : reconnexion nécessaire.");
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = typeof body.detail === "string" ? body.detail : `Erreur HTTP ${response.status}`;

@@ -4,11 +4,15 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import RedirectResponse
+from html import escape
+from urllib.parse import quote
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from backend import auth
 from backend.database import get_analysis, init_db, list_analyses, save_analysis
 from backend.live_collector import (
     CollectorConfigError,
@@ -28,6 +32,127 @@ app = FastAPI(
 )
 
 init_db()  # cree la table SQLite au demarrage si elle n'existe pas
+
+
+# --------------------------------------------------------------------------- #
+# Authentification (voir backend/auth.py) et en-tetes de securite
+# --------------------------------------------------------------------------- #
+PUBLIC_PATHS = {"/login", "/health"}
+
+
+def is_anonymous_internet_request(request):
+    """
+    Sans mot de passe (SENTINELPATH_AUTH=disabled), seuls deux cas sont acceptes :
+      - acces direct depuis ce PC (http://127.0.0.1:8000) : pas d'en-tete de proxy ;
+      - acces via "tailscale serve" (HTTPS prive) : Tailscale ajoute l'identite du membre
+        du reseau (Tailscale-User-Login).
+    Une requete relayee SANS identite vient d'internet (ex. Tailscale Funnel) : refusee.
+    """
+    forwarded = "x-forwarded-for" in request.headers
+    return forwarded and not request.headers.get("tailscale-user-login")
+
+
+def wants_html(request):
+    return request.method == "GET" and "text/html" in request.headers.get("accept", "")
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    if auth.auth_disabled() and is_anonymous_internet_request(request):
+        return JSONResponse(
+            {"detail": "Accès depuis internet refusé : SentinelPath fonctionne sans mot de passe, "
+                       "il n'est accessible que depuis ce PC ou le réseau Tailscale."},
+            status_code=403)
+    if not auth.auth_disabled() and path not in PUBLIC_PATHS:
+        if not auth.configured_hash():
+            message = ("Authentification non configurée : définissez SENTINELPATH_PASSWORD_HASH "
+                       "(python -m backend.auth). Accès refusé par sécurité.")
+            return JSONResponse({"detail": message}, status_code=503)
+        if not (auth.read_session(request.cookies.get(auth.SESSION_COOKIE, ""))
+                or auth.is_agent_request(request.headers.get("authorization"))):
+            if wants_html(request):
+                return RedirectResponse(f"/login?next={quote(path)}", status_code=303)
+            return JSONResponse({"detail": "Authentification requise."}, status_code=401)
+
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    return response
+
+
+def safe_next(target):
+    """Redirection apres connexion : chemin interne uniquement (pas de //site-externe)."""
+    if target and target.startswith("/") and not target.startswith("//") and "\\" not in target:
+        return target
+    return "/app/"
+
+
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SentinelPath – Connexion</title>
+<style>
+  body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #050d1a;
+         font-family: "Segoe UI", Arial, sans-serif; color: #d9e8ff; }}
+  form {{ width: min(360px, calc(100vw - 32px)); padding: 28px; background: #0b1a2e;
+          border: 1px solid #29b6f6; border-radius: 14px; box-shadow: 0 0 30px rgba(41,182,246,.3); }}
+  h1 {{ margin: 0 0 4px; color: #fff; }} h1 span {{ color: #29b6f6; }}
+  p.sub {{ margin: 0 0 20px; color: #7f9bb8; font-size: 14px; }}
+  label {{ display: block; margin: 12px 0 4px; font-size: 14px; }}
+  input {{ width: 100%; box-sizing: border-box; padding: 9px; border: 1px solid #15406b;
+           border-radius: 6px; background: #08162a; color: #d9e8ff; font-size: 15px; }}
+  button {{ width: 100%; margin-top: 20px; padding: 10px; background: transparent; color: #29b6f6;
+            border: 1px solid #29b6f6; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }}
+  button:hover {{ background: rgba(41,182,246,.12); }}
+  .error {{ margin-top: 14px; color: #ff8a80; font-size: 14px; }}
+</style></head><body>
+<form method="post" action="/login">
+  <h1>Sentinel<span>Path</span></h1>
+  <p class="sub">Analyse de vulnérabilités et de chemins d'attaque</p>
+  <input type="hidden" name="next" value="{next}">
+  <label for="username">Identifiant</label>
+  <input id="username" name="username" autocomplete="username" required autofocus>
+  <label for="password">Mot de passe</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+  <button type="submit">Se connecter</button>
+  {error}
+</form></body></html>"""
+
+
+def login_page(next_path="/app/", error=None, status_code=200):
+    html = LOGIN_PAGE.format(
+        next=escape(safe_next(next_path)),
+        error=f'<p class="error">{escape(error)}</p>' if error else "",
+    )
+    return HTMLResponse(html, status_code=status_code)
+
+
+@app.get("/login", include_in_schema=False)
+def login_form(next: str = "/app/"):
+    return login_page(next)
+
+
+@app.post("/login", include_in_schema=False)
+def login(username: str = Form(...), password: str = Form(...), next: str = Form("/app/")):
+    if auth.auth_disabled():
+        return RedirectResponse(safe_next(next), status_code=303)
+    ok, error = auth.check_credentials(username, password)
+    if not ok:
+        return login_page(next, error, status_code=401)
+    response = RedirectResponse(safe_next(next), status_code=303)
+    response.set_cookie(auth.SESSION_COOKIE, auth.create_session(username),
+                        max_age=auth.SESSION_SECONDS, httponly=True, secure=True,
+                        samesite="lax", path="/")
+    return response
+
+
+@app.post("/logout", include_in_schema=False)
+def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return response
 
 
 def load_analysis(analysis_id: int | None = None):
