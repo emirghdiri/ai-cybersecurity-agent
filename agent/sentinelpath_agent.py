@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections import Counter
 
 import requests
@@ -446,15 +447,21 @@ def compare_analyses(old_analysis_id, new_analysis_id):
     }
 
 
-def run_new_analysis():
+def launch_analysis():
     """
-    POST /collect-and-analyze : nouvelle collecte live (scan Nmap depuis Kali + inventaire
-    Ubuntu) puis analyse complete, puis comparaison avec l'analyse precedente.
+    OUTIL D'ACTION (les autres outils ne font que lire) : POST /collect-and-analyze lance
+    une vraie collecte en direct sur les VMs (scan Nmap complet depuis Kali + inventaire
+    sur Ubuntu), l'analyse complete et l'enregistrement, puis compare avec l'analyse
+    precedente. Timeout long (COLLECT_TIMEOUT) : le scan de tous les ports prend du temps.
     """
     history = api_get("/analyses")
     previous_id = history[0]["id"] if history else None
-    print("  [..] collecte live en cours (scan Nmap + inventaire)...")
-    result = api_post("/collect-and-analyze")
+    print("  [..] Analyse en cours (scan Nmap + inventaire sur les VMs), "
+          "ca peut prendre une minute...", flush=True)
+    started = time.monotonic()
+    result = api_post("/collect-and-analyze", timeout=COLLECT_TIMEOUT)
+    print(f"  [ok] Nouvelle analyse #{result['analysis_id']} terminee en "
+          f"{time.monotonic() - started:.0f} s.", flush=True)
     new_id = result["analysis_id"]
     out = {"new_analysis_id": new_id, "collection": result}
     if previous_id is not None:
@@ -471,7 +478,7 @@ AVAILABLE_FUNCTIONS = {
     "get_attack_paths": get_attack_paths,
     "get_risk_analysis": get_risk_analysis,
     "compare_analyses": compare_analyses,
-    "run_new_analysis": run_new_analysis,
+    "launch_analysis": launch_analysis,
 }
 
 # Tous les parametres optionnels acceptent null : gpt-oss envoie souvent
@@ -629,13 +636,16 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "run_new_analysis",
+            "name": "launch_analysis",
             "description": (
-                "Lance une NOUVELLE collecte reelle de l'infrastructure (scan Nmap depuis Kali + "
-                "inventaire sur Ubuntu, par SSH), l'analyse complete, puis renvoie les differences "
-                "avec l'analyse precedente. Prend de 20 secondes a quelques minutes. A utiliser "
-                "UNIQUEMENT si l'utilisateur demande explicitement un nouveau scan ou une nouvelle "
-                "analyse ('refais un scan', 'relance l'analyse', 'analyse a nouveau mon reseau')."
+                "ACTION, pas une lecture : declenche une NOUVELLE collecte en direct sur les VMs "
+                "(scan Nmap complet depuis Kali + inventaire sur Ubuntu, par SSH), puis l'analyse "
+                "complete, l'enregistre comme nouvelle analyse et renvoie les differences avec la "
+                "precedente. Ce n'est PAS une relecture des resultats existants : cela prend de "
+                "20 secondes a plusieurs minutes et sollicite les machines. A appeler UNIQUEMENT "
+                "si l'utilisateur le demande clairement ('relance une analyse', 'refais un scan', "
+                "'analyse a nouveau mon infrastructure') ou confirme apres que tu le lui as "
+                "propose. Jamais pour repondre a une question sur les resultats actuels."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
@@ -656,7 +666,8 @@ Principe absolu : les outils calculent, toi tu expliques.
 - Cite les identifiants exacts (CVE, noms des services/conteneurs, scores) pour que l'utilisateur puisse verifier.
 - Les CVE sont deduites de la version du logiciel (base NVD) : ce sont des vulnerabilites potentielles, leur exploitabilite reelle sur la machine n'a pas ete testee ; dis-le quand tu presentes des CVE. Une CVE marquee exploited_in_wild figure dans le catalogue CISA KEV (exploitee par de vrais attaquants) : signale-la comme prioritaire.
 - Si la version d'un service est "deduite de l'etiquette de l'image Docker", precise-le : c'est l'etiquette de l'image, pas une version mesuree.
-- N'appelle run_new_analysis que si l'utilisateur demande explicitement un nouveau scan ou une nouvelle analyse ; pour une simple question, lis les resultats existants.
+- launch_analysis est le seul outil d'ACTION : il relance une vraie collecte sur les VMs (long, sollicite les machines). Ne l'appelle que si l'utilisateur le demande clairement et explicitement ("relance une analyse", "refais un scan", "analyse a nouveau mon infrastructure"), ou s'il vient de repondre oui a ta proposition de le faire. Ne l'appelle JAMAIS automatiquement pour repondre a une question sur les resultats existants : lis-les avec les autres outils.
+- Si tu n'es pas sur que l'utilisateur veuille vraiment relancer une analyse complete (par exemple "est-ce que mon nouveau conteneur est pris en compte ?", "les resultats sont-ils a jour ?"), n'appelle PAS launch_analysis : reponds avec les donnees existantes (date de la derniere analyse via list_analyses) et demande-lui s'il veut que tu relances une analyse, en precisant que cela prend environ une minute.
 
 Style : reponds en francais, de facon claire et structuree, concise (listes courtes plutot que longs paragraphes). Commence par la reponse directe a la question."""
 
