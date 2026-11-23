@@ -15,7 +15,7 @@ const TOOL_LABELS = {
   get_attack_paths: "Chemins d'attaque",
   get_risk_analysis: "Analyse de risque",
   compare_analyses: "Comparaison d'analyses",
-  run_new_analysis: "Nouvelle collecte live",
+  launch_analysis: "Nouvelle collecte live (action)",
 };
 
 // Icone de la bulle : petit robot dessine en SVG.
@@ -37,7 +37,7 @@ async function callAgent(question) {
   });
   chatHistory.push({ role: "user", content: question }, { role: "assistant", content: reply.answer });
   // L'agent a lance une nouvelle collecte : on affiche la nouvelle analyse.
-  if ((reply.tools || []).some(t => t.tool === "run_new_analysis" && t.ok)) {
+  if ((reply.tools || []).some(t => t.tool === "launch_analysis" && t.ok)) {
     currentId = null;
     refresh();
   }

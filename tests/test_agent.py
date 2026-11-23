@@ -129,3 +129,18 @@ def test_run_tool_records_trace(backend):
                       "ok": True, "result": text}]
     agent.run_tool("outil_inconnu", "{}", trace)
     assert trace[-1]["ok"] is False and trace[-1]["tool"] == "outil_inconnu"
+
+
+def test_launch_analysis_is_an_action_with_long_timeout(monkeypatch):
+    calls = []
+    monkeypatch.setattr(agent, "api_get", lambda route, analysis_id=None:
+                        [{"id": 7}] if route == "/analyses" else None)
+    monkeypatch.setattr(agent, "api_post", lambda route, timeout=None:
+                        calls.append((route, timeout)) or {"analysis_id": 8, "services": 3})
+    monkeypatch.setattr(agent, "compare_analyses", lambda old, new: {"old": old, "new": new})
+    out = agent.launch_analysis()
+    assert calls == [("/collect-and-analyze", agent.COLLECT_TIMEOUT)]
+    assert agent.COLLECT_TIMEOUT > agent.HTTP_TIMEOUT
+    assert out["new_analysis_id"] == 8 and out["changes_since_previous"] == {"old": 7, "new": 8}
+    tool = next(t for t in agent.TOOLS if t["function"]["name"] == "launch_analysis")
+    assert "ACTION" in tool["function"]["description"]
