@@ -56,3 +56,18 @@ def test_validate_collector():
     assert validate_collector({"hosts": [{"services": [{"name": "x", "port": 1}]}],
                                "relations": []}) == []
     assert validate_collector({"hosts": [], "relations": "?"})
+
+
+def test_collect_status_idle():
+    s = client.get("/collect-status").json()
+    assert s == {"running": False, "step": None, "elapsed_seconds": None}
+
+
+def test_only_one_collection_at_a_time(ssh_env):
+    from backend import main
+    assert main.COLLECT_LOCK.acquire(blocking=False)
+    try:
+        r = client.post("/collect-and-analyze")
+        assert r.status_code == 409 and "déjà en cours" in r.json()["detail"]
+    finally:
+        main.COLLECT_LOCK.release()

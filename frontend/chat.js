@@ -37,9 +37,13 @@ async function callAgent(question) {
   });
   chatHistory.push({ role: "user", content: question }, { role: "assistant", content: reply.answer });
   // L'agent a lance une nouvelle collecte : on affiche la nouvelle analyse.
-  if ((reply.tools || []).some(t => t.tool === "launch_analysis" && t.ok)) {
+  const launched = (reply.tools || []).find(t => t.tool === "launch_analysis" && t.ok);
+  if (launched) {
     currentId = null;
-    refresh();
+    await refresh();
+    let id = "";
+    try { id = ` #${JSON.parse(launched.result).new_analysis_id}`; } catch { /* id facultatif */ }
+    setStatus(`Nouvelle analyse${id} enregistrée (lancée par l'agent IA).`);
   }
   return reply;
 }
@@ -110,8 +114,14 @@ async function sendQuestion(question) {
   const button = document.querySelector("#chat-form button[type=submit]");
   document.getElementById("chat-suggestions").hidden = true;
   addMessage(question, "user");
-  const waiting = addMessage("L'agent choisit ses outils et interroge l'API…", "agent thinking");
+  const waiting = addMessage("L'agent choisit ses outils et interroge l'API", "agent thinking");
   button.disabled = true;
+  // Si l'agent lance une collecte (launch_analysis), on montre sa progression en direct.
+  const stopWatch = watchCollection(s => {
+    waiting.textContent = s.done
+      ? `Nouvelle analyse #${s.id} enregistrée : l'agent compare avec la précédente et rédige sa réponse`
+      : `L'agent a lancé une collecte live : ${s.step || "démarrage"} (${s.elapsed_seconds ?? 0} s)`;
+  });
   try {
     const reply = await callAgent(question);
     waiting.remove();
@@ -124,6 +134,7 @@ async function sendQuestion(question) {
     addMessage(`Agent IA indisponible : ${error.message}`, "agent simulated");
     addMessage(simulatedAnswer(), "agent simulated");
   } finally {
+    stopWatch();
     button.disabled = false;
     document.getElementById("chat-input").focus();
   }

@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -93,6 +95,34 @@ def analyze():
     return result
 
 
+# Etat de la collecte en cours, lu par le frontend (GET /collect-status) pour afficher
+# la progression, que la collecte vienne du bouton ou de l'agent IA (launch_analysis).
+# Une seule collecte a la fois : deux scans simultanes solliciteraient deux fois les VMs.
+COLLECT_LOCK = threading.Lock()
+COLLECT_STATE = {"running": False, "step": None, "started": None}
+STEP_LABELS = {
+    "[1/4]": "scan Nmap depuis Kali (étape 1/5)",
+    "[2/4]": "inventaire sur Ubuntu (étape 2/5)",
+    "[3/4]": "récupération de l'inventaire (étape 3/5)",
+    "[4/4]": "fusion inventaire + scan Nmap (étape 4/5)",
+}
+
+
+def set_collect_step(message):
+    COLLECT_STATE["step"] = STEP_LABELS.get(message[:5], message)
+
+
+@app.get("/collect-status")
+def collect_status():
+    """Collecte live en cours ? (etape et duree, pour afficher la progression)."""
+    started = COLLECT_STATE["started"]
+    return {
+        "running": COLLECT_STATE["running"],
+        "step": COLLECT_STATE["step"],
+        "elapsed_seconds": round(time.monotonic() - started) if started else None,
+    }
+
+
 @app.post("/collect-and-analyze")
 def collect_and_analyze():
     """
@@ -105,8 +135,23 @@ def collect_and_analyze():
     except CollectorConfigError as e:
         raise HTTPException(status_code=503, detail=f"Collecte live non configurée : {e}")
 
+    if not COLLECT_LOCK.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Une collecte est déjà en cours ({COLLECT_STATE['step'] or 'démarrage'}) : "
+                   "attendez qu'elle se termine.",
+        )
+    COLLECT_STATE.update(running=True, step="démarrage", started=time.monotonic())
     try:
-        data, steps = run_live_collection(config)
+        return _collect_and_analyze(config)
+    finally:
+        COLLECT_STATE.update(running=False, step=None, started=None)
+        COLLECT_LOCK.release()
+
+
+def _collect_and_analyze(config):
+    try:
+        data, steps = run_live_collection(config, log=set_collect_step)
     except LiveCollectorError as e:
         raise HTTPException(
             status_code=504 if e.timeout else 502,
@@ -124,6 +169,7 @@ def collect_and_analyze():
     with open(COLLECTOR_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
+    COLLECT_STATE["step"] = "analyse des vulnérabilités et des chemins d'attaque (étape 5/5)"
     try:
         result = run_pipeline(COLLECTOR_FILE)
     except (KeyError, IndexError, json.JSONDecodeError) as e:

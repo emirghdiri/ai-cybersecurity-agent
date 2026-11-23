@@ -96,11 +96,45 @@ document.getElementById("analysis-select").addEventListener("change", event => {
 // Lance une NOUVELLE collecte (scan Nmap depuis Kali + inventaire sur Ubuntu, par SSH)
 // puis l'analyse. Si la collecte live n'est pas configuree sur ce serveur (variables
 // SSH absentes), on reanalyse le dernier collector_output.json importe, en le signalant.
+// Suit une collecte live en cours (lancee par le bouton OU par l'agent IA) : affiche
+// l'etape et la duree, puis rafraichit le tableau de bord des que la nouvelle analyse
+// est enregistree. onProgress recoit {running, step, elapsed_seconds} ou {done, id}.
+// Renvoie une fonction qui arrete le suivi.
+function watchCollection(onProgress = () => {}) {
+  let wasRunning = false, stopped = false, latestBefore = null;
+  api("/analyses").then(h => { latestBefore = h.length ? h[0].id : 0; }).catch(() => {});
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const s = await api("/collect-status");
+      if (s.running) {
+        wasRunning = true;
+        setStatus(`Collecte live en cours : ${s.step || "démarrage"} (${s.elapsed_seconds ?? 0} s)…`);
+        onProgress(s);
+      } else if (wasRunning) {
+        wasRunning = false;
+        const history = await api("/analyses");
+        const latest = history.length ? history[0].id : null;
+        if (latest && latest !== latestBefore) {
+          latestBefore = latest;
+          currentId = latest;
+          await refresh();
+          setStatus(`Nouvelle analyse #${latest} enregistrée.`);
+          onProgress({ done: true, id: latest });
+        }
+      }
+    } catch { /* suivi indicatif : une erreur ponctuelle ne doit rien bloquer */ }
+  };
+  const timer = setInterval(tick, 2000);
+  return () => { stopped = true; clearInterval(timer); };
+}
+
 document.getElementById("analyze-btn").addEventListener("click", async event => {
   const button = event.target;
   button.disabled = true;
   setStatus("Collecte en cours : scan Nmap depuis Kali puis inventaire sur Ubuntu, "
             + "puis analyse (de 30 secondes à quelques minutes)…");
+  const stopWatch = watchCollection();
   try {
     let note = "";
     try {
@@ -121,6 +155,7 @@ document.getElementById("analyze-btn").addEventListener("click", async event => 
   } catch (error) {
     setStatus(error.message, true);
   } finally {
+    stopWatch();
     button.disabled = false;
   }
 });
