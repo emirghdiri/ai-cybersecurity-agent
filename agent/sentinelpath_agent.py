@@ -20,6 +20,8 @@ Usage :
   python agent/sentinelpath_agent.py --debug     # affiche aussi les arguments des outils
 """
 import argparse
+import hashlib
+import hmac
 import inspect
 import json
 import os
@@ -52,11 +54,24 @@ class BackendError(Exception):
     """Erreur lisible a renvoyer au modele (backend arrete, analyse absente...)."""
 
 
+def auth_headers():
+    """
+    Jeton d'acces a l'API quand l'authentification est active (voir backend/auth.py) :
+    meme calcul que le serveur, a partir de la cle SENTINELPATH_SECRET partagee.
+    """
+    secret = os.environ.get("SENTINELPATH_SECRET")
+    if not secret:
+        return {}
+    token = hmac.new(secret.encode(), b"sentinelpath-agent-api", hashlib.sha256).hexdigest()
+    return {"Authorization": f"Bearer {token}"}
+
+
 def api_get(route, analysis_id=None):
     """GET sur le backend, avec des erreurs claires plutot qu'une exception brute."""
     params = {"analysis_id": analysis_id} if analysis_id is not None else None
     try:
-        r = requests.get(f"{API_URL}{route}", params=params, timeout=HTTP_TIMEOUT)
+        r = requests.get(f"{API_URL}{route}", params=params, timeout=HTTP_TIMEOUT,
+                         headers=auth_headers())
     except requests.ConnectionError:
         raise BackendError(
             f"Backend injoignable sur {API_URL}. "
@@ -77,7 +92,7 @@ def api_get(route, analysis_id=None):
 def api_post(route, timeout=COLLECT_TIMEOUT):
     """POST sans corps sur le backend (lancement d'une collecte/analyse)."""
     try:
-        r = requests.post(f"{API_URL}{route}", timeout=timeout)
+        r = requests.post(f"{API_URL}{route}", timeout=timeout, headers=auth_headers())
     except requests.ConnectionError:
         raise BackendError(f"Backend injoignable sur {API_URL}.")
     except requests.Timeout:
