@@ -207,13 +207,6 @@ document.getElementById("chat-expand").addEventListener("click", event => {
   event.target.textContent = expanded ? "Réduire" : "Agrandir";
 });
 
-const welcome = addMessage("", "agent");
-welcome.innerHTML = renderAgentMarkdown(
-  "Bonjour ! Je suis l'**agent IA de SentinelPath**. Je ne calcule rien moi-même : "
-  + "j'interroge les **outils d'analyse** (vulnérabilités, graphe, chemins, risque) puis je "
-  + "vous explique leurs résultats. Chaque réponse indique ses **sources**.\n\n"
-  + "Je peux aussi **relancer un scan** de l'infrastructure si vous me le demandez.");
-
 document.getElementById("chat-form").addEventListener("submit", event => {
   event.preventDefault();
   const input = document.getElementById("chat-input");
