@@ -40,6 +40,18 @@ init_db()  # cree la table SQLite au demarrage si elle n'existe pas
 PUBLIC_PATHS = {"/login", "/health"}
 
 
+def is_anonymous_internet_request(request):
+    """
+    Sans mot de passe (SENTINELPATH_AUTH=disabled), seuls deux cas sont acceptes :
+      - acces direct depuis ce PC (http://127.0.0.1:8000) : pas d'en-tete de proxy ;
+      - acces via "tailscale serve" (HTTPS prive) : Tailscale ajoute l'identite du membre
+        du reseau (Tailscale-User-Login).
+    Une requete relayee SANS identite vient d'internet (ex. Tailscale Funnel) : refusee.
+    """
+    forwarded = "x-forwarded-for" in request.headers
+    return forwarded and not request.headers.get("tailscale-user-login")
+
+
 def wants_html(request):
     return request.method == "GET" and "text/html" in request.headers.get("accept", "")
 
@@ -47,6 +59,11 @@ def wants_html(request):
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
+    if auth.auth_disabled() and is_anonymous_internet_request(request):
+        return JSONResponse(
+            {"detail": "Accès depuis internet refusé : SentinelPath fonctionne sans mot de passe, "
+                       "il n'est accessible que depuis ce PC ou le réseau Tailscale."},
+            status_code=403)
     if not auth.auth_disabled() and path not in PUBLIC_PATHS:
         if not auth.configured_hash():
             message = ("Authentification non configurée : définissez SENTINELPATH_PASSWORD_HASH "

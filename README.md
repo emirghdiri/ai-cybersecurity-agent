@@ -159,6 +159,19 @@ Les tests n'utilisent ni le réseau ni les VMs. Les résultats de scan réels (`
 
 ## Mise en ligne en HTTPS
 
+**Option recommandée : HTTPS privé, sans mot de passe (Tailscale Serve).** Vrai certificat, adresse `https://<machine>.<tailnet>.ts.net`, accessible uniquement aux membres du réseau Tailscale (l'équipe, le jury invité) :
+
+```bash
+# une fois, par l'administrateur du réseau Tailscale : activer "HTTPS Certificates"
+# sur https://login.tailscale.com/admin/dns
+SENTINELPATH_AUTH=disabled python -m uvicorn backend.main:app
+tailscale serve --bg 8000
+```
+
+Sans mot de passe, le serveur n'accepte que ce PC et les membres du réseau Tailscale (identité ajoutée par Tailscale) ; toute requête relayée depuis internet est refusée (403).
+
+**Option publique (Tailscale Funnel), avec mot de passe obligatoire :**
+
 SentinelPath peut être publié avec un vrai certificat HTTPS et une adresse fixe gratuite grâce à **Tailscale Funnel**, sans ouvrir de port sur la box :
 
 ```bash

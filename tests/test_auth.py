@@ -91,3 +91,14 @@ def test_agent_token_grants_api_access(enabled):
     assert headers["Authorization"] == f"Bearer {auth.agent_token()}"
     assert enabled.get("/analyses", headers=headers).status_code == 200
     assert enabled.get("/analyses", headers={"Authorization": "Bearer faux"}).status_code == 401
+
+
+def test_without_password_only_local_and_tailnet(monkeypatch):
+    monkeypatch.setenv("SENTINELPATH_AUTH", "disabled")
+    c = TestClient(app)
+    assert c.get("/collect-status").status_code == 200                       # ce PC
+    tailnet = {"x-forwarded-for": "100.102.201.55", "tailscale-user-login": "arij@example.com"}
+    assert c.get("/collect-status", headers=tailnet).status_code == 200       # tailscale serve
+    internet = {"x-forwarded-for": "203.0.113.7"}
+    r = c.get("/collect-status", headers=internet)                            # Funnel / internet
+    assert r.status_code == 403 and "internet refusé" in r.json()["detail"]
