@@ -30,11 +30,21 @@ def test_password_hashing():
     assert PASSWORD not in HASH
 
 
-def test_closed_by_default_without_password(monkeypatch):
+def test_without_password_open_locally_closed_to_internet(monkeypatch):
     monkeypatch.delenv("SENTINELPATH_AUTH", raising=False)
     monkeypatch.delenv("SENTINELPATH_PASSWORD_HASH", raising=False)
+    client = TestClient(app)
+    assert client.get("/health").status_code == 200
+    assert client.get("/analyses").status_code == 200          # ce PC
+    r = client.get("/analyses", headers={"X-Forwarded-For": "203.0.113.7"})
+    assert r.status_code == 403                                 # internet (Funnel)
+
+
+def test_required_mode_refuses_without_password(monkeypatch):
+    monkeypatch.setenv("SENTINELPATH_AUTH", "required")
+    monkeypatch.delenv("SENTINELPATH_PASSWORD_HASH", raising=False)
     r = TestClient(app).get("/analyses")
-    assert r.status_code == 503 and "non configurée" in r.json()["detail"]
+    assert r.status_code == 503 and "non configur" in r.json()["detail"]
 
 
 def test_protected_routes_require_login(enabled):

@@ -10,8 +10,8 @@ Principe :
     empreinte PBKDF2-SHA256 (600 000 iterations, sel aleatoire) ;
   - apres connexion, un cookie de session signe (HMAC-SHA256), HttpOnly, Secure,
     SameSite=Lax, valable 8 h ;
-  - FERME PAR DEFAUT : si aucun mot de passe n'est configure, tout est refuse
-    (sauf si SENTINELPATH_AUTH=disabled est defini explicitement, pour un usage local) ;
+  - sans mot de passe configure : acces libre depuis ce PC et le reseau Tailscale
+    uniquement, internet refuse (SENTINELPATH_AUTH=required pour tout fermer) ;
   - anti-force brute : apres 5 echecs en 5 minutes, connexion bloquee 60 s.
 
 Variables d'environnement :
@@ -19,7 +19,8 @@ Variables d'environnement :
   SENTINELPATH_PASSWORD_HASH   empreinte generee par : python -m backend.auth
   SENTINELPATH_SECRET          cle de signature des sessions (sinon aleatoire : les
                                sessions sont alors perdues a chaque redemarrage)
-  SENTINELPATH_AUTH=disabled   desactive l'authentification (usage local uniquement)
+  SENTINELPATH_AUTH=disabled   desactive l'authentification (PC + reseau Tailscale)
+  SENTINELPATH_AUTH=required   exige un mot de passe (tout est refuse s'il manque)
 """
 import base64
 import getpass
@@ -49,7 +50,13 @@ _lock = threading.Lock()
 # Configuration
 # --------------------------------------------------------------------------- #
 def auth_disabled():
-    return os.environ.get("SENTINELPATH_AUTH", "").lower() == "disabled"
+    """
+    Mode sans mot de passe : explicite (SENTINELPATH_AUTH=disabled) ou implicite quand
+    aucun mot de passe n'est configure. Dans ce mode, main.py n'accepte que ce PC et le
+    reseau Tailscale (toute requete anonyme venue d'internet est refusee).
+    """
+    mode = os.environ.get("SENTINELPATH_AUTH", "").lower()
+    return mode == "disabled" or (mode != "required" and not configured_hash())
 
 
 def configured_user():

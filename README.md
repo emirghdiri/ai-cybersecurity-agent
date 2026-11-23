@@ -131,13 +131,15 @@ kali ALL=(root) NOPASSWD: /usr/bin/nmap -sV -T4 -p- -oX /home/kali/sentinelpath_
 
 Une règle `nmap *` donnerait en pratique un accès root (`--script`) : tous les arguments sont donc figés.
 
-**4. Créer le compte de connexion** (obligatoire : sans mot de passe, le site refuse tout accès)
+**4. (Optionnel) Créer un compte de connexion**
+
+Sans mot de passe, SentinelPath s'ouvre directement depuis ce PC et le réseau Tailscale, et refuse toute requête venant d'internet. Un mot de passe n'est nécessaire que pour une publication sur internet (Funnel) :
 
 ```bash
 python -m backend.auth      # demande le mot de passe et affiche les variables à définir
 ```
 
-Le mot de passe n'est jamais stocké : seule son empreinte PBKDF2 l'est (`SENTINELPATH_PASSWORD_HASH`). Pour un usage purement local, `SENTINELPATH_AUTH=disabled` désactive la connexion.
+Le mot de passe n'est jamais stocké : seule son empreinte PBKDF2 l'est (`SENTINELPATH_PASSWORD_HASH`). `SENTINELPATH_AUTH=required` refuse tout accès tant qu'aucun mot de passe n'est défini.
 
 **5. Lancer SentinelPath**
 
@@ -164,7 +166,7 @@ Les tests n'utilisent ni le réseau ni les VMs. Les résultats de scan réels (`
 ```bash
 # une fois, par l'administrateur du réseau Tailscale : activer "HTTPS Certificates"
 # sur https://login.tailscale.com/admin/dns
-SENTINELPATH_AUTH=disabled python -m uvicorn backend.main:app
+python -m uvicorn backend.main:app      # sans mot de passe configuré
 tailscale serve --bg 8000
 ```
 
